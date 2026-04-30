@@ -377,62 +377,166 @@ def extract_zusatz_schedule(file_bytes: bytes, filename: str) -> pd.DataFrame:
     )
 
 
+def _massendruck_header_key(value) -> str:
+    """Normalisiert Excel-Überschriften für robuste Spaltenerkennung."""
+    text = normalize_text(value).lower()
+    repl = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
+    text = text.translate(repl)
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def _massendruck_clean_cell(value) -> str:
+    """Zellenwert drucktauglich normalisieren: 1028.0 -> 1028, leer/NaN -> ''."""
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none", "nat"}:
+        return ""
+    if re.match(r"^\d+\.0$", text):
+        text = text[:-2]
+    return text.strip()
+
+
+def _massendruck_clean_sap(value) -> str:
+    """SAP-Nummer robust normalisieren, damit Excel-Zahlen und Text gleich gematcht werden."""
+    text = _massendruck_clean_cell(value)
+    if not text:
+        return ""
+    if re.match(r"^\d+\.0$", text):
+        text = text[:-2]
+    digits = "".join(ch for ch in text if ch.isdigit())
+    return (digits or text).strip().lower()
+
+
+def _massendruck_find_columns(rows: List[tuple]) -> Tuple[int, int, Dict[int, int]]:
+    """Findet Kopfzeile, SAP-Spalte und Tour-Spalten.
+
+    Neues Layout laut Tournummern-Datei:
+      A = CSB, B = SAP, C = Name, D = Strasse, E = Plz, F = Ort,
+      G = Mo, H = Die, I = Mitt, J = Don, K = Fr, L = Sam.
+
+    Falls die Überschriften leicht anders heißen, wird über Aliasnamen gesucht.
+    Falls keine Kopfzeile erkannt wird, greift die feste Spaltenposition B/G-L.
+    """
+    sap_aliases = {"sap", "sapnr", "sapnummer", "sapnum", "sapno", "sapnummermarkt"}
+    day_aliases = {
+        1: {"mo", "montag"},
+        2: {"di", "die", "dienstag"},
+        3: {"mi", "mitt", "mit", "mittwoch"},
+        4: {"do", "don", "donnerstag"},
+        5: {"fr", "freitag"},
+        6: {"sa", "sam", "samstag"},
+    }
+
+    for row_idx, row in enumerate(rows[:40]):
+        header_map: Dict[str, int] = {}
+        for col_idx, cell in enumerate(row):
+            key = _massendruck_header_key(cell)
+            if key and key not in header_map:
+                header_map[key] = col_idx
+
+        sap_col: Optional[int] = None
+        for alias in sap_aliases:
+            if alias in header_map:
+                sap_col = header_map[alias]
+                break
+
+        day_cols: Dict[int, int] = {}
+        for day_num, aliases in day_aliases.items():
+            for alias in aliases:
+                if alias in header_map:
+                    day_cols[day_num] = header_map[alias]
+                    break
+
+        if sap_col is not None and len(day_cols) >= 2:
+            fixed_days = {1: 6, 2: 7, 3: 8, 4: 9, 5: 10, 6: 11}
+            for day_num, col_idx in fixed_days.items():
+                day_cols.setdefault(day_num, col_idx)
+            return row_idx, sap_col, day_cols
+
+    return 0, 1, {1: 6, 2: 7, 3: 8, 4: 9, 5: 10, 6: 11}
+
+
+def _massendruck_pick_sheets(wb) -> List[str]:
+    """Wählt die relevanten Blätter für die Tournummern-Datei aus."""
+    preferred = ["KUNDENDATEN", "DIREKT", "MK", "HUPA_NMS", "HUPA_MALCHOW"]
+    by_key = {_massendruck_header_key(name): name for name in wb.sheetnames}
+
+    selected: List[str] = []
+    for name in preferred:
+        found = by_key.get(_massendruck_header_key(name))
+        if found and found not in selected:
+            selected.append(found)
+
+    if not selected:
+        selected = wb.sheetnames[:4]
+
+    return selected
+
+
 def extract_massendruck_data(file_bytes: bytes, filename: str) -> dict:
-    """Liest Tournummern aus einer Excel-Datei (Blatt 1–4).
+    """Liest Tournummern aus der Massendruck-/Tournummern-Datei.
 
-    Spalte B (Index 1) = SAP-Nummer
-    Spalte G–L (Indizes 6–11) = Tournummern für Mo–Sa (Tag 1–6)
+    Unterstütztes neues Layout:
+      Blätter: KUNDENDATEN, DIREKT, MK, HUPA_NMS, HUPA_MALCHOW
+      Spalten: A=CSB, B=SAP, C=Name, D=Strasse, E=Plz, F=Ort,
+               G=Mo, H=Die, I=Mitt, J=Don, K=Fr, L=Sam
 
-    Returns: {sap_nr_lowercase: {"1": tour, "2": tour, …}}
+    Returns: {sap_nr_lowercase: {"1": tour_mo, "2": tour_di, …}}
     Wird direkt als ``massendruck_data`` an ``build_full_document_html`` übergeben.
     """
     try:
-        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True)
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
     except Exception as exc:
         raise ValueError(
             f"Tournummern-Datei konnte nicht als Excel gelesen werden ({filename}): {exc}"
         ) from exc
 
     result: Dict[str, Dict[str, str]] = {}
+    sheets_to_read = _massendruck_pick_sheets(wb)
 
-    # Bis zu 4 Sheets verarbeiten (Index 0-3)
-    sheets_to_read = min(4, len(wb.sheetnames))
-    for sheet_idx in range(sheets_to_read):
-        ws = wb[wb.sheetnames[sheet_idx]]
-        for row in ws.iter_rows(values_only=True):
-            if not row or len(row) < 7:
+    for sheet_name in sheets_to_read:
+        ws = wb[sheet_name]
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            continue
+
+        header_row_idx, sap_col, day_cols = _massendruck_find_columns(rows)
+
+        for row in rows[header_row_idx + 1:]:
+            if not row or sap_col >= len(row):
                 continue
 
-            # Spalte B = Index 1 → SAP-Nummer
-            sap_raw = row[1]
-            if sap_raw is None:
-                continue
-            sap_str = str(sap_raw).strip()
-            # Float-Artefakte entfernen: "1234567.0" → "1234567"
-            if re.match(r'^\d+\.0$', sap_str):
-                sap_str = sap_str[:-2]
-            if not sap_str or not any(ch.isdigit() for ch in sap_str):
+            sap_key = _massendruck_clean_sap(row[sap_col])
+            if not sap_key or sap_key in {"sap", "sapnr", "sapnummer"}:
                 continue
 
-            sap_key = sap_str.lower()  # data-sap im HTML ist lowercase
+            if not any(ch.isdigit() for ch in sap_key):
+                continue
 
             if sap_key not in result:
                 result[sap_key] = {}
 
-            # Spalten G–L = Indizes 6–11 → Tag 1 (Mo) bis 6 (Sa)
-            for day_num, col_idx in enumerate([6, 7, 8, 9, 10, 11], start=1):
-                if col_idx >= len(row) or row[col_idx] is None:
+            for day_num in range(1, 7):
+                col_idx = day_cols.get(day_num)
+                if col_idx is None or col_idx >= len(row):
                     continue
-                val = str(row[col_idx]).strip()
-                if re.match(r'^\d+\.0$', val):
-                    val = val[:-2]
-                if val and val != "0" and val.lower() not in ("", "nan", "none"):
-                    # Bei Mehrfach-Sheets: spätere Einträge überschreiben nur wenn leer
-                    if str(day_num) not in result[sap_key]:
-                        result[sap_key][str(day_num)] = val
+
+                tour = _massendruck_clean_cell(row[col_idx])
+                if not tour or tour == "0":
+                    continue
+
+                result[sap_key].setdefault(str(day_num), tour)
+
+    result = {sap: days for sap, days in result.items() if days}
+
+    if not result:
+        raise ValueError(
+            "Keine Tournummern gefunden. Erwartet werden Blätter KUNDENDATEN/DIREKT/MK/HUPA_NMS/HUPA_MALCHOW "
+            "und Spalten B=SAP sowie G-L=Mo-Sam."
+        )
 
     return result
-
 
 def build_zusatz_plan_rows(plan_rows: pd.DataFrame, zusatz_schedule: pd.DataFrame) -> pd.DataFrame:
     """Generiert synthetische Planzeilen fuer AVO, Werbemittel etc.
@@ -2925,8 +3029,8 @@ def main() -> None:
             "Tournummern-Datei (Massendruck)",
             type=["xlsx", "xls", "xlsm"],
             key="tournummern_upload",
-            help="Blätter 1–4: Spalte B = SAP-Nr, Spalten G–L = Tournummern Mo–Sa. "
-                 "Ermöglicht die Sortierung im Massendruck nach Liefertag.",
+            help="Neue Tournummern-Datei: Blätter KUNDENDATEN, DIREKT, MK, HUPA_NMS, HUPA_MALCHOW. "
+                 "Spalten: B=SAP, G=Mo, H=Die, I=Mitt, J=Don, K=Fr, L=Sam.",
         )
     with col_logo:
         logo_file = st.file_uploader(
