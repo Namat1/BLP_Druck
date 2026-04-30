@@ -4,6 +4,7 @@ import html
 import io
 import json
 import re
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -2920,6 +2921,229 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
     """
 
 
+
+# ============================================================
+# FACHBERATER-PDF
+# ============================================================
+def _pdf_clean_text(value) -> str:
+    """Text für die einfache PDF-Ausgabe säubern."""
+    text = normalize_text(value)
+    text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _pdf_text_hex(value) -> str:
+    """Text als Windows-1252 Hex-String für PDF Standard-Schriften."""
+    return _pdf_clean_text(value).encode("cp1252", errors="replace").hex().upper()
+
+
+def _pdf_text_cmd(font: str, size: float, x: float, y: float, value) -> str:
+    return f"BT /{font} {size:.2f} Tf 1 0 0 1 {x:.2f} {y:.2f} Tm <{_pdf_text_hex(value)}> Tj ET\n"
+
+
+def _pdf_line_cmd(x1: float, y1: float, x2: float, y2: float, width: float = 0.35, gray: float = 0.70) -> str:
+    return f"{gray:.2f} G {width:.2f} w {x1:.2f} {y1:.2f} m {x2:.2f} {y2:.2f} l S 0 G\n"
+
+
+def _pdf_rect_fill_cmd(x: float, y: float, w: float, h: float, gray: float = 0.94) -> str:
+    return f"{gray:.2f} g {x:.2f} {y:.2f} {w:.2f} {h:.2f} re f 0 g\n"
+
+
+def _pdf_truncate(value, max_chars: int) -> str:
+    text = _pdf_clean_text(value)
+    if len(text) <= max_chars:
+        return text
+    return text[: max(0, max_chars - 1)].rstrip() + "…"
+
+
+def _pdf_safe_filename(value: str) -> str:
+    text = _pdf_clean_text(value).lower()
+    repl = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
+    text = text.translate(repl)
+    text = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+    return text or "fachberater"
+
+
+def _pdf_finish(objects: List[bytes], root_obj_number: int = 1) -> bytes:
+    """Minimaler PDF-Writer ohne externe Abhängigkeiten."""
+    out = io.BytesIO()
+    out.write(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = [0]
+    for obj_no, obj in enumerate(objects, start=1):
+        offsets.append(out.tell())
+        out.write(f"{obj_no} 0 obj\n".encode("ascii"))
+        out.write(obj)
+        if not obj.endswith(b"\n"):
+            out.write(b"\n")
+        out.write(b"endobj\n")
+    xref_pos = out.tell()
+    out.write(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    out.write(b"0000000000 65535 f \n")
+    for off in offsets[1:]:
+        out.write(f"{off:010d} 00000 n \n".encode("ascii"))
+    out.write(
+        f"trailer\n<< /Size {len(objects) + 1} /Root {root_obj_number} 0 R >>\n"
+        f"startxref\n{xref_pos}\n%%EOF".encode("ascii")
+    )
+    return out.getvalue()
+
+
+def _prepare_fachberater_groups(customers: pd.DataFrame, selection: Optional[str]) -> Dict[str, pd.DataFrame]:
+    """Kunden nach Fachberater gruppieren. Leere Fachberater werden sichtbar gemacht."""
+    if customers.empty:
+        return {}
+
+    df = customers.copy()
+    df["_Fachberater_PDF"] = df.get("Fachberater", pd.Series("", index=df.index)).map(normalize_text)
+    df.loc[df["_Fachberater_PDF"] == "", "_Fachberater_PDF"] = "Ohne Fachberater"
+
+    # Ein Markt soll nur einmal erscheinen.
+    if "SAP_Nr" in df.columns:
+        df = df.drop_duplicates(subset=["SAP_Nr"], keep="first")
+
+    if selection and selection != "Alle Fachberater":
+        df = df[df["_Fachberater_PDF"] == selection].copy()
+
+    sort_cols = [c for c in ["_Fachberater_PDF", "Ort", "Name", "SAP_Nr"] if c in df.columns]
+    if sort_cols:
+        df = df.sort_values(sort_cols, na_position="last")
+
+    return {name: grp.reset_index(drop=True) for name, grp in df.groupby("_Fachberater_PDF", sort=True)}
+
+
+def build_fachberater_pdf(customers: pd.DataFrame, selection: Optional[str] = None) -> bytes:
+    """Erstellt ein kompaktes A4-Querformat-PDF mit allen Märkten je Fachberater.
+
+    Enthält: Fachberater, SAP-Nummer, CSB-Nummer, Name, Straße, Postleitzahl und Ort.
+    Funktioniert ohne externe PDF-Bibliothek und ist damit Streamlit-Cloud-freundlich.
+    """
+    groups = _prepare_fachberater_groups(customers, selection)
+    if not groups:
+        raise ValueError("Keine Märkte für diesen Fachberater gefunden.")
+
+    page_w, page_h = 841.89, 595.28  # A4 landscape in pt
+    margin_l, margin_r, margin_t, margin_b = 30.0, 30.0, 34.0, 30.0
+    y_top = page_h - margin_t
+    row_h = 18.0
+    header_h = 18.0
+
+    columns = [
+        ("SAP",      32.0,  52.0,  9),
+        ("CSB",      88.0,  48.0,  8),
+        ("Name / Markt", 142.0, 218.0, 38),
+        ("Straße",  364.0, 154.0, 27),
+        ("PLZ",     522.0,  34.0,  5),
+        ("Ort",     562.0, 246.0, 38),
+    ]
+    table_x = margin_l
+    table_w = page_w - margin_l - margin_r
+    table_right = table_x + table_w
+
+    pages: List[str] = []
+    stand = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+    def new_page(fachberater: str, group_count: int, page_number: int, continued: bool = False) -> List[str]:
+        c: List[str] = []
+        c.append(_pdf_text_cmd("F2", 17, margin_l, y_top, "Märkte je Fachberater"))
+        title = f"Fachberater: {fachberater}"
+        if continued:
+            title += " - Fortsetzung"
+        c.append(_pdf_text_cmd("F2", 12, margin_l, y_top - 22, title))
+        c.append(_pdf_text_cmd("F1", 9, margin_l, y_top - 38, f"Stand: {stand} - Märkte: {group_count}"))
+        c.append(_pdf_text_cmd("F1", 8, table_right - 55, 18, f"Seite {page_number}"))
+        c.append(_pdf_line_cmd(margin_l, y_top - 47, table_right, y_top - 47, width=0.6, gray=0.25))
+
+        header_y = y_top - 70
+        c.append(_pdf_rect_fill_cmd(table_x, header_y - 3, table_w, header_h, gray=0.90))
+        for label, x, _w, _chars in columns:
+            c.append(_pdf_text_cmd("F2", 8.5, x, header_y + 3, label))
+        c.append(_pdf_line_cmd(table_x, header_y - 4, table_right, header_y - 4, width=0.35, gray=0.55))
+        return c
+
+    page_no = 0
+    for fachberater, group in groups.items():
+        page_no += 1
+        content = new_page(fachberater, len(group), page_no, continued=False)
+        current_y = y_top - 92
+        row_number = 0
+
+        for _, row in group.iterrows():
+            if current_y < margin_b + 22:
+                pages.append("".join(content))
+                page_no += 1
+                content = new_page(fachberater, len(group), page_no, continued=True)
+                current_y = y_top - 92
+                row_number = 0
+
+            if row_number % 2 == 1:
+                content.append(_pdf_rect_fill_cmd(table_x, current_y - 5, table_w, row_h, gray=0.975))
+
+            values = {
+                "SAP": row.get("SAP_Nr", ""),
+                "CSB": row.get("CSB_Nr", ""),
+                "Name / Markt": row.get("Name", ""),
+                "Straße": row.get("Strasse", ""),
+                "PLZ": row.get("PLZ", ""),
+                "Ort": row.get("Ort", ""),
+            }
+            for label, x, _w, max_chars in columns:
+                content.append(_pdf_text_cmd("F1", 8.2, x, current_y, _pdf_truncate(values[label], max_chars)))
+
+            content.append(_pdf_line_cmd(table_x, current_y - 7, table_right, current_y - 7, width=0.20, gray=0.86))
+            current_y -= row_h
+            row_number += 1
+
+        pages.append("".join(content))
+
+    # PDF-Objekte aufbauen
+    objects: List[bytes] = []
+    objects.append(b"<< /Type /Catalog /Pages 2 0 R >>")
+    objects.append(b"__PAGES_PLACEHOLDER__")
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>")
+
+    page_obj_numbers: List[int] = []
+    for page_content in pages:
+        content_bytes = page_content.encode("ascii", errors="ignore")
+        page_obj_no = len(objects) + 1
+        content_obj_no = len(objects) + 2
+        page_obj_numbers.append(page_obj_no)
+        page_obj = (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_w:.2f} {page_h:.2f}] "
+            f"/Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> "
+            f"/Contents {content_obj_no} 0 R >>"
+        ).encode("ascii")
+        content_obj = b"<< /Length " + str(len(content_bytes)).encode("ascii") + b" >>\nstream\n" + content_bytes + b"endstream"
+        objects.append(page_obj)
+        objects.append(content_obj)
+
+    kids = " ".join(f"{n} 0 R" for n in page_obj_numbers)
+    objects[1] = f"<< /Type /Pages /Kids [ {kids} ] /Count {len(page_obj_numbers)} >>".encode("ascii")
+    return _pdf_finish(objects)
+
+
+def build_fachberater_pdf_zip(customers: pd.DataFrame) -> bytes:
+    """Erstellt eine ZIP-Datei mit je einer PDF-Datei pro Fachberater."""
+    groups = _prepare_fachberater_groups(customers, None)
+    if not groups:
+        raise ValueError("Keine Märkte für Fachberater gefunden.")
+
+    used_names: Dict[str, int] = {}
+    zip_buffer = io.BytesIO()
+
+    with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        for fachberater, group in groups.items():
+            safe_name = _pdf_safe_filename(fachberater)
+            used_names[safe_name] = used_names.get(safe_name, 0) + 1
+            suffix = f"_{used_names[safe_name]}" if used_names[safe_name] > 1 else ""
+            pdf_filename = f"maerkte_{safe_name}{suffix}.pdf"
+            pdf_bytes = build_fachberater_pdf(group, fachberater)
+            zip_file.writestr(pdf_filename, pdf_bytes)
+
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue()
+
 def init_session_state() -> None:
     pass  # Session-State wird bei Bedarf in main() gesetzt
 
@@ -3223,6 +3447,43 @@ def main() -> None:
                 use_container_width=True,
             )
             st.caption("HTML im Browser öffnen → Suche, Filter, Druck alles drin.")
+
+        st.divider()
+        st.subheader("Fachberater-PDF")
+        st.caption("Erstellt eine Marktübersicht aus der Kundenliste: SAP-Nummer, CSB-Nummer, Name, Straße, Postleitzahl und Ort.")
+
+        _fb_series = customers_df.get("Fachberater", pd.Series("", index=customers_df.index)).map(normalize_text)
+        _fb_series = _fb_series.mask(_fb_series == "", "Ohne Fachberater")
+        _fb_options = ["Alle Fachberater"] + sorted(_fb_series.dropna().unique().tolist())
+        _fb_choice = st.selectbox(
+            "Fachberater auswählen",
+            options=_fb_options,
+            key="fachberater_pdf_select",
+        )
+
+        if _fb_choice == "Alle Fachberater":
+            _fb_count = int(customers_df.drop_duplicates(subset=["SAP_Nr"]).shape[0]) if "SAP_Nr" in customers_df.columns else int(customers_df.shape[0])
+            _fb_groups = _prepare_fachberater_groups(customers_df, None)
+            _fb_zip_bytes = build_fachberater_pdf_zip(customers_df)
+            st.download_button(
+                label=f"⬇ Einzel-PDFs als ZIP herunterladen ({len(_fb_groups)} Fachberater / {_fb_count} Märkte)",
+                data=_fb_zip_bytes,
+                file_name="maerkte_alle_fachberater_einzeldateien.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
+            st.caption("Bei Auswahl ›Alle Fachberater‹ wird für jeden Fachberater eine eigene PDF-Datei in einer ZIP-Datei erzeugt.")
+        else:
+            _fb_count = int((_fb_series == _fb_choice).sum())
+            _fb_filename = f"maerkte_{_pdf_safe_filename(_fb_choice)}.pdf"
+            _fb_pdf_bytes = build_fachberater_pdf(customers_df, _fb_choice)
+            st.download_button(
+                label=f"⬇ Fachberater-PDF herunterladen ({_fb_count} Märkte)",
+                data=_fb_pdf_bytes,
+                file_name=_fb_filename,
+                mime="application/pdf",
+                use_container_width=True,
+            )
 
     # ── Tab: Kundenvorschau ──
     with tab_preview:
