@@ -929,6 +929,29 @@ def export_css() -> str:
             border-color: var(--sb-active);
             box-shadow: 0 0 0 3px rgba(230,161,0,0.15);
         }
+        .sidebar-select {
+            width: 100%;
+            border: 1.5px solid var(--sb-border);
+            border-radius: 8px;
+            padding: 8px 10px;
+            font-size: 12px;
+            font-family: inherit;
+            font-weight: 600;
+            outline: none;
+            background: #fff;
+            color: var(--sb-text);
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05) inset;
+        }
+        .sidebar-select:focus {
+            border-color: var(--sb-active);
+            box-shadow: 0 0 0 3px rgba(230,161,0,0.15);
+        }
+        .fb-info {
+            margin-top: 6px;
+            font-size: 11px;
+            color: var(--sb-muted);
+            line-height: 1.35;
+        }
         .search-btn {
             border: 1.5px solid var(--sb-border);
             border-radius: 7px;
@@ -1572,6 +1595,14 @@ def render_export_search_toolbar(massendruck_section: str = "", logo_b64: str = 
             <span class="search-count" id="cnt-alle" style="font-size:12px;color:#4a5568"></span>
         </div>
 
+        <div class="sidebar-section">
+            <div class="sidebar-label">Fachberater</div>
+            <select id="fachberater-filter" class="sidebar-select" title="Fachberater auswählen">
+                <option value="">Alle Fachberater</option>
+            </select>
+            <div class="fb-info" id="fachberater-info">Alle Märkte geladen.</div>
+        </div>
+
         <div class="sidebar-subtitle-group">
             <div class="sidebar-label">Untertitel global \u00e4ndern</div>
             <input id="global-subtitle-input" type="text"
@@ -2135,6 +2166,8 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
 
             function computeOrder(primaryDay) {
                 var entries = window._allEntries || Array.from(document.querySelectorAll('.customer-entry'));
+                // Wenn vorher ein Fachberater gewählt wurde, nur die sichtbaren Märkte sortieren/drucken.
+                entries = entries.filter(function(entry) { return entry.style.display !== 'none'; });
                 var ordered = entries.map(function(entry) {
                     var sap    = (entry.getAttribute('data-sap') || '').trim();
                     var name   = entry.getAttribute('data-name') || '';
@@ -2358,6 +2391,20 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
     docs_buffer = io.StringIO()
     search_index: List[str] = []  # Kompaktes JSON-Array statt data-search-Attribut pro Kunde
 
+    # Fachberater-Dropdown im fertigen HTML: Auswahl lädt nur die Märkte dieses Fachberaters.
+    _fb_series = customers.get("Fachberater", pd.Series("", index=customers.index)).map(normalize_text)
+    _fb_series = _fb_series.mask(_fb_series == "", "Ohne Fachberater")
+    _fb_tmp = customers.copy()
+    _fb_tmp["_fb_html"] = _fb_series
+    if "SAP_Nr" in _fb_tmp.columns:
+        _fb_tmp = _fb_tmp.drop_duplicates(subset=["SAP_Nr"], keep="first")
+    _fb_counts = _fb_tmp.groupby("_fb_html", sort=True).size().to_dict()
+    fachberater_options = [
+        {"name": str(name), "count": int(count)}
+        for name, count in sorted(_fb_counts.items(), key=lambda kv: str(kv[0]).lower())
+        if str(name).strip()
+    ]
+
     # Vorab gruppieren statt pro Kunde den gesamten DataFrame zu filtern
     _plan_grouped = {sap: grp for sap, grp in plan_rows.groupby("SAP_Nr")}
 
@@ -2399,12 +2446,14 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
         entry_parts.append(render_customer_plan(customer, rows, logo_b64="", logo_mime=logo_mime, bulk_mode=True))
 
         cust_name_escaped = html.escape(str(customer.get("Name", "")).lower())
+        fachberater_attr = normalize_text(customer.get("Fachberater", "")) or "Ohne Fachberater"
         docs_buffer.write(
             f'<section class="customer-entry" '
             f'data-idx="{entry_count}" '
             f'data-sap="{html.escape(sap.lower())}" '
             f'data-csb="{html.escape(csb_nr.lower())}" '
-            f'data-name="{cust_name_escaped}">'
+            f'data-name="{cust_name_escaped}" '
+            f'data-fachberater="{html.escape(fachberater_attr)}">'
             f'{"".join(entry_parts)}'
             f'</section>'
         )
@@ -2425,6 +2474,12 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
     source_data_script = (
         '<script>window._sourceData='
         + json.dumps(source_data, ensure_ascii=False)
+        + ';</script>'
+    )
+
+    fachberater_filter_script = (
+        '<script>window._fachberaterOptions='
+        + json.dumps(fachberater_options, ensure_ascii=False)
         + ';</script>'
     )
 
@@ -2546,6 +2601,28 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
             entry.scrollIntoView({ behavior: "smooth", block: "start" });
         }
 
+        function selectedFachberater() {
+            var sel = document.getElementById("fachberater-filter");
+            return sel ? (sel.value || "") : "";
+        }
+
+        function fachberaterOk(entry) {
+            var fb = selectedFachberater();
+            if (!fb) return true;
+            return norm(entry.getAttribute("data-fachberater") || "") === norm(fb);
+        }
+
+        function updateFachberaterInfo(total) {
+            var info = document.getElementById("fachberater-info");
+            if (!info) return;
+            var fb = selectedFachberater();
+            if (!fb) {
+                info.textContent = total + " Märkte geladen.";
+            } else {
+                info.textContent = total + " Märkte für " + fb + " geladen.";
+            }
+        }
+
         function updateCounts() {
             var q = norm(document.getElementById("search-input").value);
             var SD = window._searchData || [];
@@ -2553,10 +2630,29 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
             allEntries.forEach(function (e) {
                 var idx = parseInt(e.getAttribute("data-idx"), 10);
                 var blob = norm(SD[idx] || "");
-                if (!q || blob.indexOf(q) !== -1) total++;
+                var srchOk = !q || blob.indexOf(q) !== -1;
+                if (srchOk && fachberaterOk(e)) total++;
             });
             var el = document.getElementById("cnt-alle");
             if (el) el.textContent = total + " Kunden";
+            updateFachberaterInfo(total);
+        }
+
+        function setupFachberaterFilter() {
+            var sel = document.getElementById("fachberater-filter");
+            if (!sel) return;
+            var opts = window._fachberaterOptions || [];
+            opts.forEach(function (o) {
+                var opt = document.createElement("option");
+                opt.value = o.name || "";
+                opt.textContent = (o.name || "Ohne Fachberater") + " (" + (o.count || 0) + ")";
+                sel.appendChild(opt);
+            });
+            sel.addEventListener("change", function () {
+                document.getElementById("search-input").value = "";
+                applyFilter();
+                window.scrollTo({ top: 0, behavior: "smooth" });
+            });
         }
 
         function updateSearchCount() {
@@ -2589,8 +2685,10 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
                 var idx  = parseInt(entry.getAttribute("data-idx"), 10);
                 var blob = norm(SD[idx] || "");
                 var srchOk = !q || blob.indexOf(q) !== -1;
-                entry.style.display = srchOk ? "" : "none";
-                if (srchOk && q) {
+                var fbOk = fachberaterOk(entry);
+                var show = srchOk && fbOk;
+                entry.style.display = show ? "" : "none";
+                if (show && q) {
                     setClass(entry, "is-match", true);
                     matches.push(entry);
                 }
@@ -2617,6 +2715,8 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
         function resetSearch() {
             clearHighlights();
             document.getElementById("search-input").value = "";
+            var sel = document.getElementById("fachberater-filter");
+            if (sel) sel.value = "";
             allEntries.forEach(function (e) { e.style.display = ""; });
             matches = [];
             cursor  = -1;
@@ -2627,6 +2727,7 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
         document.addEventListener("DOMContentLoaded", function () {
             allEntries = Array.from(document.querySelectorAll(".customer-entry"));
             window._allEntries = allEntries;  // für Massendruck-IIFE sichtbar
+            setupFachberaterFilter();
 
             // Debounce: bei schnellem Tippen nicht bei jedem Tastendruck filtern
             var _searchTimer = null;
@@ -2887,6 +2988,7 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
         {logo_head_script}
         {search_data_script}
         {source_data_script}
+        {fachberater_filter_script}
     </head>
     <body>
         {render_export_search_toolbar(massendruck_sidebar_section, logo_b64=sidebar_logo_b64, logo_mime=sidebar_logo_mime)}
@@ -3449,41 +3551,11 @@ def main() -> None:
             st.caption("HTML im Browser öffnen → Suche, Filter, Druck alles drin.")
 
         st.divider()
-        st.subheader("Fachberater-PDF")
-        st.caption("Erstellt eine Marktübersicht aus der Kundenliste: SAP-Nummer, CSB-Nummer, Name, Straße, Postleitzahl und Ort.")
-
-        _fb_series = customers_df.get("Fachberater", pd.Series("", index=customers_df.index)).map(normalize_text)
-        _fb_series = _fb_series.mask(_fb_series == "", "Ohne Fachberater")
-        _fb_options = ["Alle Fachberater"] + sorted(_fb_series.dropna().unique().tolist())
-        _fb_choice = st.selectbox(
-            "Fachberater auswählen",
-            options=_fb_options,
-            key="fachberater_pdf_select",
+        st.subheader("Fachberater-Auswahl im HTML")
+        st.caption(
+            "Nach dem Generieren die HTML-Datei öffnen. Links im Menü kannst du einen Fachberater auswählen. "
+            "Dann werden nur die Märkte dieses Fachberaters geladen und können direkt gedruckt werden."
         )
-
-        if _fb_choice == "Alle Fachberater":
-            _fb_count = int(customers_df.drop_duplicates(subset=["SAP_Nr"]).shape[0]) if "SAP_Nr" in customers_df.columns else int(customers_df.shape[0])
-            _fb_groups = _prepare_fachberater_groups(customers_df, None)
-            _fb_zip_bytes = build_fachberater_pdf_zip(customers_df)
-            st.download_button(
-                label=f"⬇ Einzel-PDFs als ZIP herunterladen ({len(_fb_groups)} Fachberater / {_fb_count} Märkte)",
-                data=_fb_zip_bytes,
-                file_name="maerkte_alle_fachberater_einzeldateien.zip",
-                mime="application/zip",
-                use_container_width=True,
-            )
-            st.caption("Bei Auswahl ›Alle Fachberater‹ wird für jeden Fachberater eine eigene PDF-Datei in einer ZIP-Datei erzeugt.")
-        else:
-            _fb_count = int((_fb_series == _fb_choice).sum())
-            _fb_filename = f"maerkte_{_pdf_safe_filename(_fb_choice)}.pdf"
-            _fb_pdf_bytes = build_fachberater_pdf(customers_df, _fb_choice)
-            st.download_button(
-                label=f"⬇ Fachberater-PDF herunterladen ({_fb_count} Märkte)",
-                data=_fb_pdf_bytes,
-                file_name=_fb_filename,
-                mime="application/pdf",
-                use_container_width=True,
-            )
 
     # ── Tab: Kundenvorschau ──
     with tab_preview:
