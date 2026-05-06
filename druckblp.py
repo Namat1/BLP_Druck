@@ -2205,6 +2205,9 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
                 var entries = window._allEntries || Array.from(document.querySelectorAll('.customer-entry'));
                 // Wenn vorher ein Fachberater gewählt wurde, nur die sichtbaren Märkte sortieren/drucken.
                 entries = entries.filter(function(entry) { return entry.style.display !== 'none'; });
+                // Fachberater-Sortierung nur wenn SAP-Nummern im Freifeld stehen (einmal prüfen, nicht per entry)
+                var groupTxt = document.getElementById('customer-list-input');
+                var hasSapList = !!(groupTxt && groupTxt.value.trim().length > 0);
                 var ordered = entries.map(function(entry) {
                     var sap    = (entry.getAttribute('data-sap') || '').trim();
                     var name   = entry.getAttribute('data-name') || '';
@@ -2227,15 +2230,12 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
 
                     var prio       = pt ? 0 : (st ? 1 : 2);
                     var tourDigits = (pt || st || '').replace(/\\D/g,'').padStart(8,'0');
-                    // Fachberater-Sortierung nur wenn SAP-Nummern im Freifeld stehen
-                    var groupTxt = document.getElementById('customer-list-input');
-                    var hasSapList = groupTxt && groupTxt.value.trim().length > 0;
-                    var fbKey = hasSapList ? fb.toLowerCase().trim() + '|' : '';
+                    var fbKey = hasSapList ? fb.toLowerCase().trim() + '|||' : '';
                     return {
                         entry: entry, pt: pt, st: st, stDay: stDay,
                         prio: prio, name: name, fb: fb,
                         sap: entry.getAttribute('data-sap') || '',
-                        key: fbKey + prio + tourDigits + name
+                        key: fbKey + String(prio) + tourDigits + name
                     };
                 });
                 ordered.sort(function(a,b){ return a.key < b.key ? -1 : a.key > b.key ? 1 : 0; });
@@ -2359,6 +2359,7 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
 
             function applyMassendruck(primaryDay) {
                 activeMdDay = primaryDay;
+                window._mdActiveDay = primaryDay;  // für externe Caller sichtbar
                 var pdName = MD.days[String(primaryDay)] || ('Tag ' + primaryDay);
 
                 lastOrdered = computeOrder(primaryDay);
@@ -2393,6 +2394,11 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
                 // Deckblatt generieren
                 buildCoverPage(lastOrdered, pdName);
             }
+
+            // Re-Trigger von außen (z.B. nach Laden der SAP-Gruppe im Freifeld)
+            window._reapplyMd = function() {
+                if (activeMdDay !== null) applyMassendruck(activeMdDay);
+            };
 
             window.openMdOverlay = function() {
                 if (activeMdDay === null) return;
@@ -2739,6 +2745,8 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
             activeCustomerListFilter = tokens.length > 0;
             customerListMissing = activeCustomerListFilter ? findMissingCustomerNumbers(tokens) : [];
             applyFilter();
+            // Massendruck neu sortieren (jetzt nach Fachberater, da Freifeld gefüllt)
+            if (window._reapplyMd) window._reapplyMd();
             window.scrollTo({ top: 0, behavior: "smooth" });
         }
 
