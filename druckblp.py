@@ -1651,7 +1651,7 @@ def render_export_search_toolbar(massendruck_section: str = "", logo_b64: str = 
 
         """ + massendruck_section + """
 
-        <button type="button" class="sidebar-print-btn" onclick="printCurrent()">&#128438; Drucken</button>
+        <button type="button" class="sidebar-print-btn" onclick="printCurrent()">&#128438; Einzel</button>
         <button type="button" class="sidebar-debug-btn" onclick="toggleDebug()">&#128269; Debug</button>
     </aside>
     """
@@ -1956,7 +1956,7 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
                     &#128269; Reihenfolge ansehen
                 </button>
                 <button type="button" class="sidebar-print-btn md-print-btn"
-                    onclick="printMassendruck()">&#128438; Drucken</button>
+                    onclick="printMassendruck()">&#128438; Massen</button>
             </div>
         </div>
 
@@ -1983,7 +1983,7 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
                 </div>
                 <div class="md-overlay-footer">
                     <button type="button" class="sidebar-print-btn" style="width:auto;padding:10px 28px"
-                        onclick="printMassendruck()">&#128438; Drucken</button>
+                        onclick="printMassendruck()">&#128438; Massen</button>
                     <button type="button" class="md-overview-btn" onclick="closeMdOverlay()">Schlie\u00dfen</button>
                 </div>
             </div>
