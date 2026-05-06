@@ -2202,10 +2202,10 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
             }
 
             function computeOrder(primaryDay) {
-                var entries = window._allEntries || Array.from(document.querySelectorAll('.customer-entry'));
-                // Wenn vorher ein Fachberater gewählt wurde, nur die sichtbaren Märkte sortieren/drucken.
+                // Immer frisch aus dem DOM lesen – kein veralteter Cache-Fehler
+                var entries = Array.from(document.querySelectorAll('.customer-entry'));
                 entries = entries.filter(function(entry) { return entry.style.display !== 'none'; });
-                // Fachberater-Sortierung nur wenn SAP-Nummern im Freifeld stehen (einmal prüfen, nicht per entry)
+                // Fachberater-Sortierung nur wenn SAP-Nummern im Freifeld stehen
                 var groupTxt = document.getElementById('customer-list-input');
                 var hasSapList = !!(groupTxt && groupTxt.value.trim().length > 0);
                 var ordered = entries.map(function(entry) {
@@ -2367,7 +2367,7 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
                 // DOM-Reihenfolge anpassen
                 var stack = document.querySelector('.page-stack');
                 lastOrdered.forEach(function(o) { stack.appendChild(o.entry); });
-                window._allEntries = lastOrdered.map(function(o) { return o.entry; });
+                // window._allEntries NICHT überschreiben – Such-IIFE braucht den vollen Bestand
 
                 // Tour-Nummer in Infoleiste (Druckansicht) eintragen
                 lastOrdered.forEach(function(o) {
