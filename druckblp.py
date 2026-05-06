@@ -929,6 +929,30 @@ def export_css() -> str:
             border-color: var(--sb-active);
             box-shadow: 0 0 0 3px rgba(230,161,0,0.15);
         }
+        .sidebar textarea.customer-list-textarea {
+            width: 100%;
+            min-height: 86px;
+            max-height: 180px;
+            resize: vertical;
+            border: 1.5px solid var(--sb-border);
+            border-radius: 8px;
+            padding: 8px 10px;
+            font-size: 12px;
+            line-height: 1.35;
+            font-family: 'Courier New', monospace;
+            outline: none;
+            background: var(--sb-input-bg);
+            color: var(--sb-text);
+            transition: border-color 0.15s, box-shadow 0.15s;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05) inset;
+        }
+        .sidebar textarea.customer-list-textarea::placeholder { color: #aab2be; }
+        .sidebar textarea.customer-list-textarea:focus {
+            border-color: var(--sb-active);
+            box-shadow: 0 0 0 3px rgba(230,161,0,0.15);
+        }
+        .customer-list-info.warn { color: #9a6800; }
+        .customer-list-info.ok { color: #1a7f3c; }
         .sidebar-select {
             width: 100%;
             border: 1.5px solid var(--sb-border);
@@ -1593,6 +1617,18 @@ def render_export_search_toolbar(massendruck_section: str = "", logo_b64: str = 
         <div class="sidebar-section">
             <div class="sidebar-label">Kunden</div>
             <span class="search-count" id="cnt-alle" style="font-size:12px;color:#4a5568"></span>
+        </div>
+
+        <div class="sidebar-section">
+            <div class="sidebar-label">Kundengruppe einfügen</div>
+            <textarea id="customer-list-input" class="customer-list-textarea"
+                placeholder="Kundennummern einfügen&#10;Beispiel: 12345 23456 34567"
+                autocomplete="off" spellcheck="false"></textarea>
+            <div class="search-nav-row" style="margin-top:6px;">
+                <button type="button" class="search-btn" id="btn-customer-list">Gruppe laden</button>
+                <button type="button" class="search-btn reset" id="btn-customer-list-reset">Löschen</button>
+            </div>
+            <div class="fb-info customer-list-info" id="customer-list-info">Leer = alle Kunden. Trenner: Enter, Leerzeichen, Komma oder Semikolon.</div>
         </div>
 
         <div class="sidebar-section">
@@ -2569,6 +2605,9 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
         var allEntries = [];
         var matches    = [];
         var cursor     = -1;
+        var activeCustomerListFilter = false;
+        var customerListSet = {};
+        var customerListMissing = [];
 
         function norm(s) {
             return (s || "").toLowerCase()
@@ -2612,6 +2651,111 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
             return norm(entry.getAttribute("data-fachberater") || "") === norm(fb);
         }
 
+        function normalizeCustomerNumberToken(value) {
+            var digits = String(value || "").replace(/\D/g, "");
+            if (!digits) return "";
+            return digits.replace(/^0+/, "") || "0";
+        }
+
+        function parseCustomerListText(text) {
+            var raw = String(text || "").match(/[0-9]+/g) || [];
+            var seen = {};
+            var result = [];
+            raw.forEach(function (token) {
+                var clean = normalizeCustomerNumberToken(token);
+                if (clean && !seen[clean]) {
+                    seen[clean] = true;
+                    result.push(clean);
+                }
+            });
+            return result;
+        }
+
+        function customerEntryNumbers(entry) {
+            var nums = [];
+            [entry.getAttribute("data-sap") || "", entry.getAttribute("data-csb") || ""].forEach(function (value) {
+                var clean = normalizeCustomerNumberToken(value);
+                if (clean) nums.push(clean);
+            });
+            return nums;
+        }
+
+        function customerListOk(entry) {
+            if (!activeCustomerListFilter) return true;
+            var nums = customerEntryNumbers(entry);
+            return nums.some(function (n) { return !!customerListSet[n]; });
+        }
+
+        function findMissingCustomerNumbers(tokens) {
+            var available = {};
+            allEntries.forEach(function (entry) {
+                customerEntryNumbers(entry).forEach(function (n) { available[n] = true; });
+            });
+            return tokens.filter(function (n) { return !available[n]; });
+        }
+
+        function updateCustomerListInfo(total) {
+            var info = document.getElementById("customer-list-info");
+            if (!info) return;
+            info.classList.remove("warn", "ok");
+            if (!activeCustomerListFilter) {
+                info.textContent = "Leer = alle Kunden. Trenner: Enter, Leerzeichen, Komma oder Semikolon.";
+                return;
+            }
+            var msg = total + " Kunden aus der eingefügten Gruppe geladen.";
+            if (customerListMissing.length) {
+                msg += " Nicht gefunden: " + customerListMissing.slice(0, 12).join(", ");
+                if (customerListMissing.length > 12) msg += " …";
+                info.classList.add("warn");
+            } else {
+                info.classList.add("ok");
+            }
+            info.textContent = msg;
+        }
+
+        function applyCustomerListFilter() {
+            var txt = document.getElementById("customer-list-input");
+            var tokens = parseCustomerListText(txt ? txt.value : "");
+            customerListSet = {};
+            tokens.forEach(function (n) { customerListSet[n] = true; });
+            activeCustomerListFilter = tokens.length > 0;
+            customerListMissing = activeCustomerListFilter ? findMissingCustomerNumbers(tokens) : [];
+            applyFilter();
+            window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+
+        function clearCustomerListFilter() {
+            var txt = document.getElementById("customer-list-input");
+            if (txt) txt.value = "";
+            customerListSet = {};
+            customerListMissing = [];
+            activeCustomerListFilter = false;
+            applyFilter();
+        }
+
+        function setupCustomerListFilter() {
+            var txt = document.getElementById("customer-list-input");
+            var btn = document.getElementById("btn-customer-list");
+            var reset = document.getElementById("btn-customer-list-reset");
+            if (btn) btn.addEventListener("click", applyCustomerListFilter);
+            if (reset) reset.addEventListener("click", clearCustomerListFilter);
+            if (txt) {
+                txt.addEventListener("keydown", function (e) {
+                    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                        e.preventDefault();
+                        applyCustomerListFilter();
+                    }
+                    if (e.key === "Escape") {
+                        clearCustomerListFilter();
+                    }
+                });
+                txt.addEventListener("input", function () {
+                    if (!txt.value.trim() && activeCustomerListFilter) clearCustomerListFilter();
+                });
+            }
+            updateCustomerListInfo(allEntries.length);
+        }
+
         function updateFachberaterInfo(total) {
             var info = document.getElementById("fachberater-info");
             if (!info) return;
@@ -2631,11 +2775,12 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
                 var idx = parseInt(e.getAttribute("data-idx"), 10);
                 var blob = norm(SD[idx] || "");
                 var srchOk = !q || blob.indexOf(q) !== -1;
-                if (srchOk && fachberaterOk(e)) total++;
+                if (srchOk && fachberaterOk(e) && customerListOk(e)) total++;
             });
             var el = document.getElementById("cnt-alle");
             if (el) el.textContent = total + " Kunden";
             updateFachberaterInfo(total);
+            updateCustomerListInfo(total);
         }
 
         function setupFachberaterFilter() {
@@ -2686,7 +2831,8 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
                 var blob = norm(SD[idx] || "");
                 var srchOk = !q || blob.indexOf(q) !== -1;
                 var fbOk = fachberaterOk(entry);
-                var show = srchOk && fbOk;
+                var groupOk = customerListOk(entry);
+                var show = srchOk && fbOk && groupOk;
                 entry.style.display = show ? "" : "none";
                 if (show && q) {
                     setClass(entry, "is-match", true);
@@ -2715,6 +2861,11 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
         function resetSearch() {
             clearHighlights();
             document.getElementById("search-input").value = "";
+            var groupTxt = document.getElementById("customer-list-input");
+            if (groupTxt) groupTxt.value = "";
+            activeCustomerListFilter = false;
+            customerListSet = {};
+            customerListMissing = [];
             var sel = document.getElementById("fachberater-filter");
             if (sel) sel.value = "";
             allEntries.forEach(function (e) { e.style.display = ""; });
@@ -2728,6 +2879,7 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
             allEntries = Array.from(document.querySelectorAll(".customer-entry"));
             window._allEntries = allEntries;  // für Massendruck-IIFE sichtbar
             setupFachberaterFilter();
+            setupCustomerListFilter();
 
             // Debounce: bei schnellem Tippen nicht bei jedem Tastendruck filtern
             var _searchTimer = null;
@@ -2839,6 +2991,11 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
             // Sonst: aktuell sichtbaren Kunden im Viewport drucken
             var entries = Array.from(document.querySelectorAll(".customer-entry"));
             var visible = entries.filter(function (e) { return e.style.display !== "none"; });
+
+            if (activeCustomerListFilter && visible.length > 1) {
+                window.print();
+                return;
+            }
 
             var target = null;
             if (visible.length === 1) {
