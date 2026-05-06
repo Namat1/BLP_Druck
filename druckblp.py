@@ -2424,34 +2424,7 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
 
             window.printMassendruck = function() {
                 closeMdOverlay();
-
-                // Fachberater-Namenblätter nur wenn Freifeld gefüllt
-                var hasSapList = !!window._hasCustomerList;
-                var insertedSeps = [];
-
-                if (hasSapList && lastOrdered.length > 0) {
-                    var stack = document.querySelector('.page-stack');
-                    var prevFb = null;
-                    lastOrdered.forEach(function(o) {
-                        var fb = o.fb || 'Ohne Fachberater';
-                        if (fb !== prevFb) {
-                            var sep = document.createElement('div');
-                            sep.className = 'separator-page md-fb-sep';
-                            sep.innerHTML =
-                                '<h1>' + escHtml(fb) + '</h1>' +
-                                '<h2>Fachberater</h2>' +
-                                '<p>' + escHtml(new Date().toLocaleDateString('de-DE')) + '</p>';
-                            stack.insertBefore(sep, o.entry);
-                            insertedSeps.push(sep);
-                            prevFb = fb;
-                        }
-                    });
-                }
-
                 window.print();
-
-                // Namenblätter nach dem Druck wieder entfernen
-                insertedSeps.forEach(function(sep) { sep.parentNode && sep.parentNode.removeChild(sep); });
             };
 
             document.addEventListener('DOMContentLoaded', function() {
@@ -2934,6 +2907,55 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
             updateSearchCount();
             updateCounts();
         }
+
+        // Vor dem Drucken: bei gefülltem SAP-Freifeld nach Fachberater sortieren + Namenblätter einfügen
+        var _fbPrintSeps = [];
+        function _escHtmlPrint(s) {
+            return String(s).replace(/[&<>"\']/g, function(c) {
+                return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"\'":'&#39;'}[c];
+            });
+        }
+        window.addEventListener('beforeprint', function () {
+            if (!window._hasCustomerList) return;
+            var stack = document.querySelector('.page-stack');
+            if (!stack) return;
+            var entries = Array.from(document.querySelectorAll('.customer-entry'));
+            var visible = entries.filter(function (e) { return e.style.display !== 'none'; });
+            if (visible.length === 0) return;
+
+            // Nach Fachberater (A-Z), dann nach Name
+            visible.sort(function (a, b) {
+                var fbA = (a.getAttribute('data-fachberater') || '').toLowerCase().trim();
+                var fbB = (b.getAttribute('data-fachberater') || '').toLowerCase().trim();
+                if (fbA !== fbB) return fbA < fbB ? -1 : 1;
+                var nA = (a.getAttribute('data-name') || '').toLowerCase();
+                var nB = (b.getAttribute('data-name') || '').toLowerCase();
+                return nA < nB ? -1 : nA > nB ? 1 : 0;
+            });
+
+            // DOM umsortieren + Namenblatt vor jeder Fachberater-Gruppe
+            var prevFb = null;
+            visible.forEach(function (e) {
+                var fb = e.getAttribute('data-fachberater') || 'Ohne Fachberater';
+                if (fb !== prevFb) {
+                    var sep = document.createElement('div');
+                    sep.className = 'separator-page fb-name-page';
+                    sep.innerHTML =
+                        '<h1>' + _escHtmlPrint(fb) + '</h1>' +
+                        '<h2>Fachberater</h2>';
+                    stack.appendChild(sep);
+                    _fbPrintSeps.push(sep);
+                    prevFb = fb;
+                }
+                stack.appendChild(e);
+            });
+        });
+        window.addEventListener('afterprint', function () {
+            _fbPrintSeps.forEach(function (sep) {
+                if (sep.parentNode) sep.parentNode.removeChild(sep);
+            });
+            _fbPrintSeps = [];
+        });
 
         document.addEventListener("DOMContentLoaded", function () {
             allEntries = Array.from(document.querySelectorAll(".customer-entry"));
