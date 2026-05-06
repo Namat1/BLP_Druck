@@ -1133,6 +1133,61 @@ def export_css() -> str:
         .doc-logo { text-align: right; }
 
         /* ══════════════════════════════════════
+           KUNDENSEITE – BRIEFFENSTER-LAYOUT
+           Adresse fest für DIN-lang Fensterumschlag positioniert.
+           Feinjustierung nur über left/top in .doc-address.
+        ══════════════════════════════════════ */
+        .paper-customer .paper-inner {
+            width: 210mm;
+            height: 297mm;
+            padding: 0;
+            box-sizing: border-box;
+            position: relative;
+            transform-origin: top left;
+            zoom: 1;
+        }
+        .paper-customer .doc-address {
+            position: absolute;
+            left: 20mm;
+            top: 45mm;
+            width: 85mm;
+            height: 40mm;
+            font-size: 10pt;
+            line-height: 1.35;
+            color: #111;
+            overflow: hidden;
+            padding: 0;
+        }
+        .paper-customer .doc-address strong {
+            font-size: 10pt;
+            font-weight: 700;
+            display: block;
+            margin-bottom: 1mm;
+            color: #111;
+        }
+        .paper-customer .doc-header {
+            display: grid;
+            grid-template-columns: 1fr 44mm;
+            gap: 4mm;
+            align-items: flex-start;
+            margin: 0 13mm 28mm 115mm;
+            padding-top: 15mm;
+            padding-bottom: 0;
+            border-bottom: none;
+        }
+        .paper-customer .doc-title-block {
+            text-align: left;
+            padding: 0;
+        }
+        .paper-customer .doc-logo { text-align: right; }
+        .paper-customer .doc-infobar { margin: 0 13mm 2mm 13mm; }
+        .paper-customer .tour-overview { margin: 0 13mm 2.5mm 13mm; }
+        .paper-customer .plan-table {
+            width: calc(100% - 26mm);
+            margin: 0 13mm;
+        }
+
+        /* ══════════════════════════════════════
            INFOLEISTE
         ══════════════════════════════════════ */
         .doc-infobar {
@@ -1242,6 +1297,22 @@ def export_css() -> str:
             .paper-inner {
                 width: 210mm !important; padding: 10mm 13mm !important;
                 box-sizing: border-box !important; transform: none !important;
+            }
+            .paper-customer .paper-inner {
+                width: 210mm !important;
+                height: 297mm !important;
+                padding: 0 !important;
+                box-sizing: border-box !important;
+                position: relative !important;
+                transform: none !important;
+            }
+            .paper-customer .doc-address {
+                position: absolute !important;
+                left: 20mm !important;
+                top: 45mm !important;
+                width: 85mm !important;
+                height: 40mm !important;
+                overflow: hidden !important;
             }
             .doc-subtitle:hover, .doc-subtitle:focus { background: none; box-shadow: none; }
             .is-match, .is-current { box-shadow: none !important; }
@@ -1367,7 +1438,7 @@ def render_tour_overview(customer_rows: pd.DataFrame) -> str:
     )
 
     return f"""
-    <div style="font-size:9pt; margin-bottom:2.5mm; line-height:1.6;">
+    <div class="tour-overview" style="font-size:9pt; margin-bottom:2.5mm; line-height:1.6;">
         <div><strong style="display:inline-block;width:{label_w}">Liefertag:</strong>{day_spans}</div>
     </div>
     """
@@ -1525,7 +1596,7 @@ def render_customer_plan(
     plan_table_html    = render_plan_table(customer_rows)
 
     return f"""
-    <div class="paper">
+    <div class="paper paper-customer">
     <div class="paper-inner">
 
         <!-- ===== HEADER: Adresse | Titel | Logo ===== -->
