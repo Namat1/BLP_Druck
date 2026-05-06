@@ -931,8 +931,8 @@ def export_css() -> str:
         }
         .sidebar textarea.customer-list-textarea {
             width: 100%;
-            min-height: 86px;
-            max-height: 180px;
+            min-height: 170px;
+            max-height: 320px;
             resize: vertical;
             border: 1.5px solid var(--sb-border);
             border-radius: 8px;
@@ -1622,13 +1622,13 @@ def render_export_search_toolbar(massendruck_section: str = "", logo_b64: str = 
         <div class="sidebar-section">
             <div class="sidebar-label">Kundengruppe einfügen</div>
             <textarea id="customer-list-input" class="customer-list-textarea"
-                placeholder="Kundennummern einfügen&#10;Beispiel: 12345 23456 34567"
+                placeholder="Kundennummern aus Excel einfügen&#10;214285&#10;214290&#10;214297&#10;214299"
                 autocomplete="off" spellcheck="false"></textarea>
             <div class="search-nav-row" style="margin-top:6px;">
                 <button type="button" class="search-btn" id="btn-customer-list">Gruppe laden</button>
                 <button type="button" class="search-btn reset" id="btn-customer-list-reset">Löschen</button>
             </div>
-            <div class="fb-info customer-list-info" id="customer-list-info">Leer = alle Kunden. Trenner: Enter, Leerzeichen, Komma oder Semikolon.</div>
+            <div class="fb-info customer-list-info" id="customer-list-info">Leer = alle Kunden. Excel-Liste einfach untereinander einfügen. Komma ist nicht nötig.</div>
         </div>
 
         <div class="sidebar-section">
@@ -2658,6 +2658,7 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
         }
 
         function parseCustomerListText(text) {
+            // Erkennt Nummern aus Excel-Listen: jede Zahl zählt, egal ob Zeilenumbruch, Leerzeichen, Komma oder Semikolon.
             var raw = String(text || "").match(/[0-9]+/g) || [];
             var seen = {};
             var result = [];
@@ -2699,7 +2700,7 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
             if (!info) return;
             info.classList.remove("warn", "ok");
             if (!activeCustomerListFilter) {
-                info.textContent = "Leer = alle Kunden. Trenner: Enter, Leerzeichen, Komma oder Semikolon.";
+                info.textContent = "Leer = alle Kunden. Excel-Liste einfach untereinander einfügen. Komma ist nicht nötig.";
                 return;
             }
             var msg = total + " Kunden aus der eingefügten Gruppe geladen.";
@@ -2751,6 +2752,12 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
                 });
                 txt.addEventListener("input", function () {
                     if (!txt.value.trim() && activeCustomerListFilter) clearCustomerListFilter();
+                });
+                txt.addEventListener("paste", function () {
+                    // Nach Einfügen aus Excel kurz warten, dann Gruppe automatisch laden.
+                    setTimeout(function () {
+                        if (txt.value.trim()) applyCustomerListFilter();
+                    }, 80);
                 });
             }
             updateCustomerListInfo(allEntries.length);
