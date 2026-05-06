@@ -2425,7 +2425,35 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
 
             window.printMassendruck = function() {
                 closeMdOverlay();
+
+                // Fachberater-Namenblätter nur wenn Freifeld gefüllt
+                var groupTxt = document.getElementById('customer-list-input');
+                var hasSapList = !!(groupTxt && groupTxt.value.trim().length > 0);
+                var insertedSeps = [];
+
+                if (hasSapList && lastOrdered.length > 0) {
+                    var stack = document.querySelector('.page-stack');
+                    var prevFb = null;
+                    lastOrdered.forEach(function(o) {
+                        var fb = o.fb || 'Ohne Fachberater';
+                        if (fb !== prevFb) {
+                            var sep = document.createElement('div');
+                            sep.className = 'separator-page md-fb-sep';
+                            sep.innerHTML =
+                                '<h1>' + escHtml(fb) + '</h1>' +
+                                '<h2>Fachberater</h2>' +
+                                '<p>' + escHtml(new Date().toLocaleDateString('de-DE')) + '</p>';
+                            stack.insertBefore(sep, o.entry);
+                            insertedSeps.push(sep);
+                            prevFb = fb;
+                        }
+                    });
+                }
+
                 window.print();
+
+                // Namenblätter nach dem Druck wieder entfernen
+                insertedSeps.forEach(function(sep) { sep.parentNode && sep.parentNode.removeChild(sep); });
             };
 
             document.addEventListener('DOMContentLoaded', function() {
