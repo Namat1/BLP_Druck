@@ -1972,7 +1972,6 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
                     <table class="md-table">
                         <thead><tr>
                             <th style="width:36px">#</th>
-                            <th style="width:90px">Fachberater</th>
                             <th>Kundenname</th>
                             <th style="width:54px">SAP-Nr</th>
                             <th id="md-th-p" style="width:72px">Prim\u00e4r</th>
@@ -2202,15 +2201,12 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
             }
 
             function computeOrder(primaryDay) {
-                // Immer frisch aus dem DOM lesen – kein veralteter Cache-Fehler
-                var entries = Array.from(document.querySelectorAll('.customer-entry'));
+                var entries = window._allEntries || Array.from(document.querySelectorAll('.customer-entry'));
+                // Wenn vorher ein Fachberater gewählt wurde, nur die sichtbaren Märkte sortieren/drucken.
                 entries = entries.filter(function(entry) { return entry.style.display !== 'none'; });
-                // Fachberater-Sortierung nur wenn SAP-Nummern im Freifeld stehen
-                var hasSapList = !!window._hasCustomerList;
                 var ordered = entries.map(function(entry) {
                     var sap    = (entry.getAttribute('data-sap') || '').trim();
                     var name   = entry.getAttribute('data-name') || '';
-                    var fb     = entry.getAttribute('data-fachberater') || '';
                     var asgn   = MD.assignments[sap] || {};
                     var pt     = asgn[String(primaryDay)] || '';
 
@@ -2229,12 +2225,11 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
 
                     var prio       = pt ? 0 : (st ? 1 : 2);
                     var tourDigits = (pt || st || '').replace(/\\D/g,'').padStart(8,'0');
-                    var fbKey = hasSapList ? fb.toLowerCase().trim() + '|||' : '';
                     return {
                         entry: entry, pt: pt, st: st, stDay: stDay,
-                        prio: prio, name: name, fb: fb,
+                        prio: prio, name: name,
                         sap: entry.getAttribute('data-sap') || '',
-                        key: fbKey + String(prio) + tourDigits + name
+                        key: prio + tourDigits + name
                     };
                 });
                 ordered.sort(function(a,b){ return a.key < b.key ? -1 : a.key > b.key ? 1 : 0; });
@@ -2271,7 +2266,6 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
 
                 var tbody = document.getElementById('md-table-body');
                 tbody.innerHTML = '';
-                var lastFb = null;
                 ordered.forEach(function(o, i) {
                     var prioLabel = o.prio === 0
                         ? '<span class="md-prio-p">Prim\u00e4r</span>'
@@ -2279,19 +2273,9 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
                             ? '<span class="md-prio-s">Sek. ' + escHtml(MD.days[String(o.stDay)] || '') + '</span>'
                             : '<span class="md-prio-u">\u00dcbrig</span>';
                     var stCell = o.st ? (escHtml(o.st) + ' <span style="color:#aab2be;font-size:10px">(' + escHtml((MD.days[String(o.stDay)]||'').slice(0,2)) + ')</span>') : '';
-                    // Fachberater-Trennzeile bei Gruppenwechsel
-                    var fbNow = o.fb || '\u2013';
-                    if (fbNow !== lastFb) {
-                        var sep = document.createElement('tr');
-                        sep.style.cssText = 'background:#f0f4f8;';
-                        sep.innerHTML = '<td colspan="7" style="padding:5px 12px;font-size:10px;font-weight:700;color:#4a5568;letter-spacing:0.06em;text-transform:uppercase;border-top:1.5px solid #dde2ea;">' + escHtml(fbNow) + '</td>';
-                        tbody.appendChild(sep);
-                        lastFb = fbNow;
-                    }
                     var tr = document.createElement('tr');
                     tr.innerHTML =
                         '<td style="color:#6b7a90;text-align:right;padding-right:8px">' + (i+1) + '</td>' +
-                        '<td style="font-size:11px;color:#6b7a90">' + escHtml(o.fb || '') + '</td>' +
                         '<td style="font-weight:600;color:#1a2332">' + escHtml(o.name) + '</td>' +
                         '<td style="font-family:monospace;font-size:11px;color:#6b7a90">' + escHtml(o.sap) + '</td>' +
                         '<td class="md-tour" style="color:#b07800">' + escHtml(o.pt) + '</td>' +
@@ -2358,7 +2342,6 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
 
             function applyMassendruck(primaryDay) {
                 activeMdDay = primaryDay;
-                window._mdActiveDay = primaryDay;  // für externe Caller sichtbar
                 var pdName = MD.days[String(primaryDay)] || ('Tag ' + primaryDay);
 
                 lastOrdered = computeOrder(primaryDay);
@@ -2366,7 +2349,7 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
                 // DOM-Reihenfolge anpassen
                 var stack = document.querySelector('.page-stack');
                 lastOrdered.forEach(function(o) { stack.appendChild(o.entry); });
-                // window._allEntries NICHT überschreiben – Such-IIFE braucht den vollen Bestand
+                window._allEntries = lastOrdered.map(function(o) { return o.entry; });
 
                 // Tour-Nummer in Infoleiste (Druckansicht) eintragen
                 lastOrdered.forEach(function(o) {
@@ -2393,11 +2376,6 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
                 // Deckblatt generieren
                 buildCoverPage(lastOrdered, pdName);
             }
-
-            // Re-Trigger von außen (z.B. nach Laden der SAP-Gruppe im Freifeld)
-            window._reapplyMd = function() {
-                if (activeMdDay !== null) applyMassendruck(activeMdDay);
-            };
 
             window.openMdOverlay = function() {
                 if (activeMdDay === null) return;
@@ -2742,11 +2720,9 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
             customerListSet = {};
             tokens.forEach(function (n) { customerListSet[n] = true; });
             activeCustomerListFilter = tokens.length > 0;
-            window._hasCustomerList = activeCustomerListFilter;  // für Massendruck-IIFE
+            window._hasCustomerList = activeCustomerListFilter;  // Flag für Druck-Hook
             customerListMissing = activeCustomerListFilter ? findMissingCustomerNumbers(tokens) : [];
             applyFilter();
-            // Massendruck neu sortieren (jetzt nach Fachberater, da Freifeld gefüllt)
-            if (window._reapplyMd) window._reapplyMd();
             window.scrollTo({ top: 0, behavior: "smooth" });
         }
 
