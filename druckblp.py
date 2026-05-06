@@ -2206,8 +2206,7 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
                 var entries = Array.from(document.querySelectorAll('.customer-entry'));
                 entries = entries.filter(function(entry) { return entry.style.display !== 'none'; });
                 // Fachberater-Sortierung nur wenn SAP-Nummern im Freifeld stehen
-                var groupTxt = document.getElementById('customer-list-input');
-                var hasSapList = !!(groupTxt && groupTxt.value.trim().length > 0);
+                var hasSapList = !!window._hasCustomerList;
                 var ordered = entries.map(function(entry) {
                     var sap    = (entry.getAttribute('data-sap') || '').trim();
                     var name   = entry.getAttribute('data-name') || '';
@@ -2427,8 +2426,7 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
                 closeMdOverlay();
 
                 // Fachberater-Namenblätter nur wenn Freifeld gefüllt
-                var groupTxt = document.getElementById('customer-list-input');
-                var hasSapList = !!(groupTxt && groupTxt.value.trim().length > 0);
+                var hasSapList = !!window._hasCustomerList;
                 var insertedSeps = [];
 
                 if (hasSapList && lastOrdered.length > 0) {
@@ -2771,6 +2769,7 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
             customerListSet = {};
             tokens.forEach(function (n) { customerListSet[n] = true; });
             activeCustomerListFilter = tokens.length > 0;
+            window._hasCustomerList = activeCustomerListFilter;  // für Massendruck-IIFE
             customerListMissing = activeCustomerListFilter ? findMissingCustomerNumbers(tokens) : [];
             applyFilter();
             // Massendruck neu sortieren (jetzt nach Fachberater, da Freifeld gefüllt)
@@ -2924,6 +2923,7 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
             var groupTxt = document.getElementById("customer-list-input");
             if (groupTxt) groupTxt.value = "";
             activeCustomerListFilter = false;
+            window._hasCustomerList = false;
             customerListSet = {};
             customerListMissing = [];
             var sel = document.getElementById("fachberater-filter");
