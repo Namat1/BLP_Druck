@@ -1081,32 +1081,23 @@ def export_css() -> str:
         ══════════════════════════════════════ */
         .doc-header {
             display: grid;
-            grid-template-columns: 1fr 44mm;
+            grid-template-columns: 52mm 1fr 44mm;
             gap: 3mm;
             align-items: flex-start;
-            min-height: 78mm;          /* reserviert Platz für Adressfenster (DIN 5008 B) */
             margin-bottom: 2mm;
             padding-bottom: 0;
             border-bottom: none;
         }
         .doc-address {
-            /* DIN 5008 Form B: 20mm von links, 45mm von oben, 85×45mm
-               sitzt absolut in .paper (relative) → unabhängig vom Header-Flow */
-            position: absolute;
-            top: 45mm;
-            left: 20mm;
-            width: 85mm;
-            max-height: 42mm;
-            font-size: 10pt;
-            line-height: 1.45;
-            color: #111;
-            overflow: hidden;
+            font-size: 9pt;
+            line-height: 1.5;
+            color: #333;
         }
         .doc-address strong {
-            font-size: 10.5pt;
+            font-size: 9.5pt;
             font-weight: 700;
             display: block;
-            margin-bottom: 0.8mm;
+            margin-bottom: 0.5mm;
             color: #111;
         }
         .doc-title-block { text-align: center; padding: 0 2mm; }
