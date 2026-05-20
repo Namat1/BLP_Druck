@@ -1081,20 +1081,20 @@ def export_css() -> str:
         ══════════════════════════════════════ */
         .doc-header {
             display: grid;
-            grid-template-columns: 57mm 1fr 48mm;
-            gap: 4mm;
+            grid-template-columns: 52mm 1fr 44mm;
+            gap: 3mm;
             align-items: flex-start;
-            margin-bottom: 3mm;
+            margin-bottom: 2mm;
             padding-bottom: 0;
             border-bottom: none;
         }
         .doc-address {
-            font-size: 10pt;
-            line-height: 1.55;
+            font-size: 9pt;
+            line-height: 1.5;
             color: #333;
         }
         .doc-address strong {
-            font-size: 10.5pt;
+            font-size: 9.5pt;
             font-weight: 700;
             display: block;
             margin-bottom: 0.5mm;
@@ -1102,14 +1102,14 @@ def export_css() -> str:
         }
         .doc-title-block { text-align: center; padding: 0 2mm; }
         .doc-title {
-            font-size: 17.5pt;
+            font-size: 16pt;
             font-weight: 700;
             line-height: 1.15;
             margin-bottom: 1.5mm;
             color: #111;
         }
         .doc-subtitle {
-            font-size: 24pt;
+            font-size: 22pt;
             font-weight: 700;
             color: #c00;
             margin-bottom: 1mm;
@@ -1136,8 +1136,8 @@ def export_css() -> str:
            INFOLEISTE
         ══════════════════════════════════════ */
         .doc-infobar {
-            font-size: 10pt;
-            margin: 3mm 0 3mm;
+            font-size: 9pt;
+            margin: 2mm 0 2mm;
             padding: 0;
             background: none;
             border: none;
@@ -1316,7 +1316,7 @@ def render_tour_overview(customer_rows: pd.DataFrame) -> str:
     )
 
     return f"""
-    <div style="font-size:10pt; margin-bottom:3mm; line-height:1.6;">
+    <div style="font-size:9pt; margin-bottom:2.5mm; line-height:1.6;">
         <div><strong style="display:inline-block;width:{label_w}">Liefertag:</strong>{day_spans}</div>
     </div>
     """
