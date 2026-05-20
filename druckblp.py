@@ -1244,6 +1244,7 @@ def export_css() -> str:
                 box-sizing: border-box !important; transform: none !important;
             }
             .doc-subtitle:hover, .doc-subtitle:focus { background: none; box-shadow: none; }
+            .doc-subtitle.is-edited { background: none; border-bottom: none; }
             .is-match, .is-current { box-shadow: none !important; }
             .print-hidden { display: none !important; }
         }
@@ -1282,8 +1283,8 @@ def export_css() -> str:
            CONTENTEDITABLE DIRTY-STATE
         ══════════════════════════════════════ */
         .doc-subtitle.is-edited {
-            background: rgba(200,0,0,0.06);
-            border-bottom: 2px dashed rgba(200,0,0,0.3);
+            background: none;
+            border-bottom: none;
         }
 
     </style>
