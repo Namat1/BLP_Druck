@@ -3256,7 +3256,8 @@ def main() -> None:
             )
             st.session_state["_df_cache_key"] = _cache_key
             st.session_state["_df_cache_result"] = _result
-            st.session_state["_export_ready"] = False  # alte HTML verwerfen
+            st.session_state["_export_ready"] = False
+            st.session_state["_fb_zip_ready"] = False
 
         (customers_df, plan_rows_df, counts,
          df_sap_debug) = st.session_state["_df_cache_result"]
@@ -3276,6 +3277,7 @@ def main() -> None:
                 st.session_state["_tour_cache_key"] = _tour_hash
                 st.session_state["_tour_cache_result"] = _md_data
                 st.session_state["_export_ready"] = False
+                st.session_state["_fb_zip_ready"] = False
             except Exception as exc:
                 st.warning(f"Tournummern-Datei Fehler: {exc}")
         massendruck_data = st.session_state.get("_tour_cache_result")
@@ -3386,11 +3388,58 @@ def main() -> None:
             st.caption("HTML im Browser öffnen → Suche, Filter, Druck alles drin.")
 
         st.divider()
-        st.subheader("Fachberater-Auswahl im HTML")
-        st.caption(
-            "Nach dem Generieren die HTML-Datei öffnen. Links im Menü kannst du einen Fachberater auswählen. "
-            "Dann werden nur die Märkte dieses Fachberaters geladen und können direkt gedruckt werden."
+        st.subheader("📦 Fachberater-Export")
+        st.caption("Erzeugt pro Fachberater eine eigene HTML-Datei, gebündelt als ZIP.")
+
+        _fb_col = customers_df.get("Fachberater", pd.Series("", index=customers_df.index)).map(normalize_text)
+        _fb_col = _fb_col.mask(_fb_col == "", "Ohne Fachberater")
+        _fb_counts = _fb_col.value_counts().sort_index()
+
+        st.markdown(
+            f"**{len(_fb_counts)} Fachberater** · "
+            + " · ".join(f"{fb} ({n})" for fb, n in _fb_counts.items())
         )
+
+        if st.button("📦 Fachberater-ZIP generieren", use_container_width=True):
+            _fb_grouped = customers_df.groupby(_fb_col)
+            _total = len(_fb_counts)
+            progress = st.progress(0, text="Starte Fachberater-Export …")
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                for i, (fb_name, fb_cust_df) in enumerate(_fb_grouped):
+                    progress.progress(
+                        int((i + 1) / _total * 100),
+                        text=f"{fb_name} ({i+1}/{_total}) …",
+                    )
+                    fb_sap_nrs = set(fb_cust_df["SAP_Nr"])
+                    fb_plan = plan_rows_df[plan_rows_df["SAP_Nr"].isin(fb_sap_nrs)].copy()
+                    fb_html = build_full_document_html(
+                        fb_cust_df.copy(), fb_plan,
+                        include_separators=include_sep,
+                        skip_empty_pages=skip_empty,
+                        logo_b64=logo_b64, logo_mime=logo_mime,
+                        sidebar_logo_b64=sidebar_logo_b64, sidebar_logo_mime=sidebar_logo_mime,
+                        massendruck_data=massendruck_data,
+                    )
+                    safe = re.sub(r'[^\w\-äöüÄÖÜß]+', '_', fb_name).strip('_')
+                    zf.writestr(f"sendeplan_{safe}.html", fb_html.encode("utf-8"))
+            progress.progress(100, text="Fertig!")
+            zip_buffer.seek(0)
+            st.session_state["_fb_zip"] = zip_buffer.getvalue()
+            st.session_state["_fb_zip_ready"] = True
+            st.toast(f"✅ {_total} Fachberater-Dateien erzeugt!", icon="📦")
+
+        if st.session_state.get("_fb_zip_ready"):
+            _zb = st.session_state["_fb_zip"]
+            _zs = len(_zb) / 1024
+            _zl = f"{_zs/1024:.1f} MB" if _zs > 1024 else f"{_zs:.0f} KB"
+            st.download_button(
+                label=f"⬇  fachberater_sendepläne.zip herunterladen  ({_zl})",
+                data=_zb,
+                file_name="fachberater_sendepläne.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
 
     # ── Tab: Kundenvorschau ──
     with tab_preview:
