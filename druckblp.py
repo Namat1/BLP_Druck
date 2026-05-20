@@ -2207,6 +2207,21 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
     # Vorab gruppieren statt pro Kunde den gesamten DataFrame zu filtern
     _plan_grouped = {sap: grp for sap, grp in plan_rows.groupby("SAP_Nr")}
 
+    # Sortierung: Kunden MIT Sortiment oben, OHNE Sortiment unten (je Fachberater)
+    def _has_sortiment(sap_nr: str) -> int:
+        grp = _plan_grouped.get(sap_nr, pd.DataFrame())
+        if grp.empty:
+            return 1  # ohne → nach unten
+        vals = {normalize_text(v) for v in grp.get("Sortiment", pd.Series(dtype=str)).tolist() if normalize_text(v)}
+        return 0 if vals else 1
+    customers = customers.copy()
+    customers["_has_sort"] = customers["SAP_Nr"].map(_has_sortiment)
+    customers = customers.sort_values(
+        ["Fachberater", "_has_sort", "Name", "SAP_Nr"],
+        na_position="last",
+    ).reset_index(drop=True)
+    customers = customers.drop(columns=["_has_sort"])
+
     entry_count = 0
     skipped_count = 0
     for _, customer in customers.iterrows():
