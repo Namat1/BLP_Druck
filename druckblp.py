@@ -1286,59 +1286,6 @@ def export_css() -> str:
             border-bottom: 2px dashed rgba(200,0,0,0.3);
         }
 
-        /* ══════════════════════════════════════
-           QUELLDATEN-PANEL (rechte Sideview)
-        ══════════════════════════════════════ */
-        .src-btn {
-            background: #eef4ff; border: 1.5px solid #93b4e0; border-radius: 6px;
-            padding: 3px 12px; font-size: 10px; font-weight: 700;
-            color: #1a60b0; cursor: pointer; font-family: inherit;
-            transition: all 0.15s; margin-left: auto;
-        }
-        .src-btn:hover { background: #dbeafe; border-color: #1a60b0; color: #0f4a8a; }
-        @media print { .src-btn { display: none !important; } }
-
-        .src-overlay {
-            position: fixed; inset: 0; background: rgba(0,0,0,0.35);
-            z-index: 400; display: none;
-        }
-        .src-overlay.open { display: flex; justify-content: flex-end; }
-        .src-panel {
-            width: min(680px, 92vw); height: 100vh;
-            background: #fff; box-shadow: -8px 0 40px rgba(0,0,0,0.18);
-            display: flex; flex-direction: column;
-            overflow: hidden;
-        }
-        .src-panel-header {
-            padding: 16px 20px 12px; background: #f8fafc;
-            border-bottom: 1px solid #e5e9f0;
-            display: flex; align-items: center; justify-content: space-between;
-            flex-shrink: 0;
-        }
-        .src-panel-title { font-size: 14px; font-weight: 700; color: #1a2332; }
-        .src-panel-close {
-            background: none; border: none; font-size: 18px; color: #6b7a90;
-            cursor: pointer; padding: 4px 8px; border-radius: 6px;
-        }
-        .src-panel-close:hover { background: #e8ecf2; color: #1a2332; }
-        .src-panel-body {
-            flex: 1; overflow-y: auto; padding: 16px 20px;
-            scrollbar-width: thin; scrollbar-color: #dde2ea transparent;
-        }
-        .src-table {
-            width: 100%; border-collapse: collapse; font-size: 11px;
-            margin-bottom: 12px;
-        }
-        .src-table thead th {
-            background: #f0f4f8; color: #4a5568; padding: 6px 8px;
-            text-align: left; font-size: 10px; font-weight: 700;
-            letter-spacing: 0.05em; border-bottom: 1.5px solid #dde2ea;
-            white-space: nowrap;
-        }
-        .src-table tbody td {
-            padding: 5px 8px; border-bottom: 1px solid #f0f4f8; color: #2a3848;
-        }
-        .src-table tbody tr:hover td { background: #f5f7fa; }
     </style>
     """
 
@@ -1551,7 +1498,6 @@ def render_customer_plan(
             <span><strong>Kunden-Nr.:</strong> {html.escape(sap_nr)}</span>
             <span><strong>Fachberater:</strong> {html.escape(fachberater)}</span>
             <span><strong>Stand:</strong> {html.escape(stand)}</span>
-            <button type="button" class="src-btn" onclick="openSourcePanel('{html.escape(sap_nr)}')">&#128270; Quelldaten</button>
             <span class="md-tour-inline" style="display:none"></span>
         </div>
 
@@ -1725,10 +1671,6 @@ def _build_debug_html(data: Optional[Dict[str, pd.DataFrame]]) -> str:
 
     return "".join(sections)
 
-
-def _rows_to_list(df: pd.DataFrame, cols: List[str]) -> list:
-    avail = [c for c in cols if c in df.columns]
-    return df[avail].fillna("").astype(str).to_dict(orient="records")
 
 
 def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, include_separators: bool = False, skip_empty_pages: bool = False, logo_b64: str = "", logo_mime: str = "image/png", sidebar_logo_b64: str = "", sidebar_logo_mime: str = "image/png", debug_data: Optional[Dict[str, pd.DataFrame]] = None, massendruck_data: Optional[dict] = None) -> str:
@@ -2316,103 +2258,13 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
         )
         entry_count += 1
 
-    # Quelldaten pro Kunde (SAP vs KSP) als JSON für die Sideview
-    source_data: Dict[str, dict] = {}
-    _src_cols = ["Liefertag", "Sortiment", "Bestelltag_Name", "Bestellzeitende", "KSP_Schluessel"]
-    for sap_nr, grp in _plan_grouped.items():
-        ist_zusatz = grp["_ist_zusatz"].astype(bool) if "_ist_zusatz" in grp.columns else pd.Series(False, index=grp.index)
-        sap_rows = grp[~ist_zusatz]
-        ksp_rows = grp[ist_zusatz]
-        source_data[str(sap_nr).lower()] = {
-            "sap": _rows_to_list(sap_rows, _src_cols),
-            "ksp": _rows_to_list(ksp_rows, _src_cols),
-        }
-
-    source_data_script = (
-        '<script>window._sourceData='
-        + json.dumps(source_data, ensure_ascii=False)
-        + ';</script>'
-    )
-
     fachberater_filter_script = (
         '<script>window._fachberaterOptions='
         + json.dumps(fachberater_options, ensure_ascii=False)
         + ';</script>'
     )
 
-    source_panel_js = """
-    <script>
-    function openSourcePanel(sap) {
-        function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-        var dayOrder = {'Montag':1,'Dienstag':2,'Mittwoch':3,'Donnerstag':4,'Freitag':5,'Samstag':6,'Sonntag':7};
-        var SD = window._sourceData || {};
-        var data = SD[sap.toLowerCase()];
-        var title = document.getElementById('src-panel-title');
-        var body  = document.getElementById('src-panel-body');
-        title.textContent = 'Quelldaten \\u2013 SAP ' + sap;
-        if (!data) { body.innerHTML = '<p style="color:#888">Keine Daten.</p>'; }
-        else {
-            var days = {};
-            data.sap.forEach(function(r) {
-                var d = r.Liefertag || 'Unbekannt';
-                if (!days[d]) days[d] = [];
-                days[d].push({src:'SAP', sort:r.Sortiment||'', btag:r.Bestelltag_Name||'', bzeit:r.Bestellzeitende||'', ksp:r.KSP_Schluessel||''});
-            });
-            data.ksp.forEach(function(r) {
-                var d = r.Liefertag || 'Unbekannt';
-                if (!days[d]) days[d] = [];
-                days[d].push({src:'CSB', sort:r.Sortiment||'', btag:r.Bestelltag_Name||'', bzeit:r.Bestellzeitende||'', ksp:r.KSP_Schluessel||''});
-            });
-            var sorted = Object.keys(days).sort(function(a,b) {
-                return (dayOrder[a]||99) - (dayOrder[b]||99);
-            });
-
-            var h = '';
-            sorted.forEach(function(day) {
-                var rows = days[day];
-                rows.sort(function(a,b) {
-                    var pinWords = ['fleisch','heidemark'];
-                    var al = a.sort.toLowerCase(), bl = b.sort.toLowerCase();
-                    var ap = pinWords.some(function(w){return al.indexOf(w)!==-1;});
-                    var bp = pinWords.some(function(w){return bl.indexOf(w)!==-1;});
-                    if (ap !== bp) return ap ? -1 : 1;
-                    var sa = a.src === 'SAP' ? 0 : 1;
-                    var sb = b.src === 'SAP' ? 0 : 1;
-                    if (sa !== sb) return sa - sb;
-                    if (a.bzeit > b.bzeit) return -1;
-                    if (a.bzeit < b.bzeit) return 1;
-                    return 0;
-                });
-                h += '<div style="margin:18px 0 8px;font-size:13px;font-weight:800;color:#1a2332;border-bottom:2px solid #e5e9f0;padding-bottom:5px">';
-                h += esc(day) + '</div>';
-                h += '<table class="src-table"><thead><tr>';
-                h += '<th style="width:42px">Quelle</th><th>Sortiment</th><th>Bestelltag</th><th>Bestellzeit</th><th>KSP-Key</th>';
-                h += '</tr></thead><tbody>';
-                rows.forEach(function(r) {
-                    if (r.src === 'CSB') {
-                        h += '<tr style="background:#eefbf0;border-left:3px solid #1a9e52">';
-                        h += '<td style="font-size:9px;font-weight:800;color:#1a7f3c;letter-spacing:0.08em">CSB</td>';
-                        h += '<td style="font-weight:600;color:#1a7f3c">' + esc(r.sort) + '</td>';
-                    } else {
-                        h += '<tr style="background:#f8faff;border-left:3px solid #4a90d9">';
-                        h += '<td style="font-size:9px;font-weight:800;color:#1a60b0;letter-spacing:0.08em">SAP</td>';
-                        h += '<td>' + esc(r.sort) + '</td>';
-                    }
-                    h += '<td>' + esc(r.btag) + '</td><td>' + esc(r.bzeit) + '</td>';
-                    h += '<td style="font-family:monospace;color:#6b7a90;font-size:10px">' + esc(r.ksp) + '</td></tr>';
-                });
-                h += '</tbody></table>';
-            });
-            body.innerHTML = h;
-        }
-        document.getElementById('src-overlay').classList.add('open');
-    }
-    function closeSourcePanel() { document.getElementById('src-overlay').classList.remove('open'); }
-    document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeSourcePanel(); });
-    </script>
-    """
-
-    # Suchdaten als kompaktes JSON-Array – spart ~100KB HTML bei 500 Kunden
+    # Suchdaten als kompaktes JSON-Array
     search_data_script = (
         '<script>window._searchData='
         + json.dumps(search_index, ensure_ascii=False)
@@ -2996,7 +2848,6 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
         {massendruck_data_script}
         {logo_head_script}
         {search_data_script}
-        {source_data_script}
         {fachberater_filter_script}
     </head>
     <body>
@@ -3014,17 +2865,6 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
             </div>
             {debug_html if debug_html else '<p style="color:#666;font-size:12px">Keine Debug-Daten vorhanden.</p>'}
         </div>
-        <!-- Quelldaten-Panel -->
-        <div class="src-overlay" id="src-overlay" onclick="if(event.target===this)closeSourcePanel()">
-            <div class="src-panel">
-                <div class="src-panel-header">
-                    <div class="src-panel-title" id="src-panel-title">Quelldaten</div>
-                    <button class="src-panel-close" onclick="closeSourcePanel()">&#10005;</button>
-                </div>
-                <div class="src-panel-body" id="src-panel-body"></div>
-            </div>
-        </div>
-        {source_panel_js}
         {search_script}
     </body>
     </html>
