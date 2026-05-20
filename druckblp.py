@@ -1731,186 +1731,7 @@ def _rows_to_list(df: pd.DataFrame, cols: List[str]) -> list:
     return df[avail].fillna("").astype(str).to_dict(orient="records")
 
 
-# ============================================================
-# VALIDIERUNGS-DECKBLATT
-# ============================================================
-def render_validation_cover(
-    customers: pd.DataFrame,
-    plan_rows: pd.DataFrame,
-    df_sap_raw: pd.DataFrame,
-    file_names: Dict[str, str],
-    massendruck_data: Optional[dict] = None,
-) -> str:
-    """Erzeugt ein A4-Deckblatt mit Datenqualitäts-Zusammenfassung.
-
-    Wird als erste Seite im HTML-Export gedruckt.
-    """
-    stand = datetime.now().strftime("%d.%m.%Y %H:%M")
-
-    # ── 1) Mengenabgleich ──
-    n_kunden = len(customers)
-    n_sap_zeilen = len(df_sap_raw)
-    n_sap_unique = int(df_sap_raw["SAP_Nr"].nunique()) if not df_sap_raw.empty else 0
-    n_plan = len(plan_rows)
-    n_plan_sap = int(plan_rows[~plan_rows.get("_ist_zusatz", pd.Series(False, index=plan_rows.index)).astype(bool)]["SAP_Nr"].nunique()) if not plan_rows.empty else 0
-    n_plan_zusatz = int(plan_rows[plan_rows.get("_ist_zusatz", pd.Series(False, index=plan_rows.index)).astype(bool)].shape[0]) if not plan_rows.empty else 0
-
-    mengen_rows = f"""
-    <tr><td>Kundenliste</td><td class="vr">{n_kunden}</td><td>Kunden im Export</td></tr>
-    <tr><td>SAP-Datei (FLEISCH)</td><td class="vr">{n_sap_zeilen}</td><td>Zeilen gesamt</td></tr>
-    <tr><td>SAP eindeutige Kunden</td><td class="vr">{n_sap_unique}</td><td>Verschiedene SAP-Nr</td></tr>
-    <tr><td>Planzeilen gesamt</td><td class="vr">{n_plan}</td><td>SAP + Zusatz-Sortimente</td></tr>
-    <tr><td>davon Zusatz (KSP)</td><td class="vr">{n_plan_zusatz}</td><td>AVO, Werbemittel etc.</td></tr>
-    """
-
-    # ── 2) Liefertag-Verteilung ──
-    day_order = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"]
-    day_counts: Dict[str, int] = {}
-    if not plan_rows.empty and "Liefertag" in plan_rows.columns:
-        _vc = plan_rows["Liefertag"].value_counts()
-        for d in day_order:
-            day_counts[d] = int(_vc.get(d, 0))
-    max_day = max(day_counts.values()) if day_counts else 1
-
-    bar_rows = ""
-    for d in day_order:
-        c = day_counts.get(d, 0)
-        pct = int(c / max_day * 100) if max_day > 0 else 0
-        warn = ' style="color:#c00;font-weight:700"' if c == 0 else ""
-        bar_rows += (
-            f'<tr><td style="width:22mm">{d[:2]}</td>'
-            f'<td><div style="background:#1a7f3c;height:4mm;width:{pct}%;min-width:1px;border-radius:1mm"></div></td>'
-            f'<td class="vr"{warn}>{c}</td></tr>'
-        )
-
-    # ── 3) Zuordnungs-Quote ──
-    sap_nrs_kunden = set(customers["SAP_Nr"].dropna().unique())
-    sap_nrs_sap = set(df_sap_raw["SAP_Nr"].dropna().unique()) if not df_sap_raw.empty else set()
-    sap_nrs_plan = set(plan_rows["SAP_Nr"].dropna().unique()) if not plan_rows.empty else set()
-
-    kunden_mit_plan = sap_nrs_kunden & sap_nrs_plan
-    kunden_ohne_plan = sap_nrs_kunden - sap_nrs_plan
-    waisen_sap = sap_nrs_sap - sap_nrs_kunden  # SAP-Einträge ohne Kundenstamm
-
-    pct_mit = int(len(kunden_mit_plan) / len(sap_nrs_kunden) * 100) if sap_nrs_kunden else 0
-    # Kunden ohne Zusatz-Sortiment
-    n_ohne_zusatz = 0
-    if "_ist_zusatz" in plan_rows.columns and not plan_rows.empty:
-        sap_with_zusatz = set(plan_rows.loc[plan_rows["_ist_zusatz"].astype(bool), "SAP_Nr"].unique())
-        n_ohne_zusatz = len(sap_nrs_plan - sap_with_zusatz)
-
-    quote_rows = f"""
-    <tr><td>Kunden mit SAP-Einträgen</td><td class="vr">{len(kunden_mit_plan)}</td>
-        <td><strong>{pct_mit} %</strong> der Kundenliste</td></tr>
-    <tr><td>Kunden ohne Planzeilen</td><td class="vr">{len(kunden_ohne_plan)}</td>
-        <td>{"<span style='color:#c00'>⚠ Prüfen</span>" if kunden_ohne_plan else "✓ OK"}</td></tr>
-    <tr><td>Waisen-SAP-Nr (kein Kunde)</td><td class="vr">{len(waisen_sap)}</td>
-        <td>{"<span style='color:#c00'>⚠ Prüfen</span>" if waisen_sap else "✓ OK"}</td></tr>
-    <tr><td>Kunden ohne Zusatz-Sortiment</td><td class="vr">{n_ohne_zusatz}</td>
-        <td>Kein KSP-Match (AVO etc.)</td></tr>
-    """
-
-    # ── 4) Stichprobe ──
-    sample_cols = ["SAP_Nr", "Name", "Ort"]
-    avail_sample = [c for c in sample_cols if c in customers.columns]
-
-    def _sample_rows(df: pd.DataFrame, n: int, label: str) -> str:
-        if df.empty:
-            return ""
-        subset = df.head(n) if label == "Erste" else df.tail(n)
-        rows_html = ""
-        for _, r in subset.iterrows():
-            sap = html.escape(str(r.get("SAP_Nr", "")))
-            name = html.escape(str(r.get("Name", "")))
-            ort = html.escape(str(r.get("Ort", "")))
-            n_rows = len(plan_rows[plan_rows["SAP_Nr"] == r.get("SAP_Nr", "")]) if not plan_rows.empty else 0
-            rows_html += f"<tr><td>{sap}</td><td>{name}</td><td>{ort}</td><td class='vr'>{n_rows}</td></tr>"
-        return rows_html
-
-    stichprobe_html = _sample_rows(customers, 5, "Erste") + _sample_rows(customers, 5, "Letzte")
-
-    # ── 5) Tournummern-Abdeckung ──
-    tour_section = ""
-    if massendruck_data:
-        tour_keys = set(massendruck_data.keys())
-        kunden_lower = {s.lower() for s in sap_nrs_kunden}
-        tour_match = tour_keys & kunden_lower
-        tour_miss = kunden_lower - tour_keys
-        pct_tour = int(len(tour_match) / len(kunden_lower) * 100) if kunden_lower else 0
-        tour_section = f"""
-        <div class="val-block">
-            <div class="val-label">Tournummern-Abdeckung</div>
-            <table class="val-table">
-            <tr><td>Kunden mit Tournummer</td><td class="vr">{len(tour_match)}</td>
-                <td><strong>{pct_tour} %</strong></td></tr>
-            <tr><td>Kunden ohne Tournummer</td><td class="vr">{len(tour_miss)}</td>
-                <td>{"<span style='color:#c00'>⚠</span>" if tour_miss else "✓"}</td></tr>
-            <tr><td>Einträge in Tournummern-Datei</td><td class="vr">{len(tour_keys)}</td><td></td></tr>
-            </table>
-        </div>"""
-
-    # ── Datei-Namen ──
-    file_info = " · ".join(
-        f"{k}: {html.escape(v)}" for k, v in file_names.items() if v
-    )
-
-    return f"""
-    <section class="validation-cover">
-    <div class="paper">
-    <div class="paper-inner">
-
-        <div style="font-size:16pt;font-weight:800;color:#111;margin-bottom:1mm">
-            Datenvalidierung &ndash; Sendeplan
-        </div>
-        <div style="font-size:9pt;color:#555;margin-bottom:1mm">
-            Erstellt: {html.escape(stand)}
-        </div>
-        <div style="font-size:7.5pt;color:#999;margin-bottom:4mm;padding-bottom:2mm;border-bottom:0.3mm solid #ccc">
-            {file_info}
-        </div>
-
-        <div class="val-block">
-            <div class="val-label">Mengenabgleich</div>
-            <table class="val-table">
-            {mengen_rows}
-            </table>
-        </div>
-
-        <div class="val-row">
-            <div class="val-block val-half">
-                <div class="val-label">Liefertag-Verteilung</div>
-                <table class="val-table">
-                {bar_rows}
-                </table>
-            </div>
-            <div class="val-block val-half">
-                <div class="val-label">Zuordnungs-Quote</div>
-                <table class="val-table">
-                {quote_rows}
-                </table>
-            </div>
-        </div>
-
-        {tour_section}
-
-        <div class="val-block">
-            <div class="val-label">Stichprobe &ndash; Erste &amp; letzte 5 Kunden</div>
-            <table class="val-table">
-            <thead><tr>
-                <th style="width:18mm">SAP-Nr</th><th>Name</th>
-                <th style="width:28mm">Ort</th><th style="width:16mm;text-align:right">Zeilen</th>
-            </tr></thead>
-            <tbody>{stichprobe_html}</tbody>
-            </table>
-        </div>
-
-    </div>
-    </div>
-    </section>
-    """
-
-
-def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, include_separators: bool = False, skip_empty_pages: bool = False, logo_b64: str = "", logo_mime: str = "image/png", sidebar_logo_b64: str = "", sidebar_logo_mime: str = "image/png", debug_data: Optional[Dict[str, pd.DataFrame]] = None, massendruck_data: Optional[dict] = None, df_sap_raw: Optional[pd.DataFrame] = None, file_names: Optional[Dict[str, str]] = None) -> str:
+def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, include_separators: bool = False, skip_empty_pages: bool = False, logo_b64: str = "", logo_mime: str = "image/png", sidebar_logo_b64: str = "", sidebar_logo_mime: str = "image/png", debug_data: Optional[Dict[str, pd.DataFrame]] = None, massendruck_data: Optional[dict] = None) -> str:
     # Logo einmalig als JS-Variable – wird nach DOMContentLoaded auf alle Bilder gesetzt.
     # Spart mehrere MB bei größeren Kundenstämmen (logo_b64 × N Kunden).
     if logo_b64:
@@ -3162,33 +2983,6 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
             border-radius:8px; margin-bottom:4px;
         }}
         .dbg-gesamt-export:hover {{ opacity:0.9; }}
-        /* ── Validierungs-Deckblatt ── */
-        .validation-cover .paper {{ page-break-after: always; break-after: page; }}
-        .val-block {{ margin-bottom: 3mm; }}
-        .val-label {{
-            font-size: 8.5pt; font-weight: 800; color: #111;
-            text-transform: uppercase; letter-spacing: 0.08em;
-            border-bottom: 0.3mm solid #ddd; padding-bottom: 1mm; margin-bottom: 1.5mm;
-        }}
-        .val-table {{
-            width: 100%; border-collapse: collapse; font-size: 8.5pt; margin-bottom: 1mm;
-        }}
-        .val-table th {{
-            text-align: left; font-size: 7.5pt; font-weight: 700; color: #555;
-            padding: 1mm 2mm; border-bottom: 0.3mm solid #ccc;
-        }}
-        .val-table td {{
-            padding: 1mm 2mm; border-bottom: 0.15mm solid #eee; color: #222;
-        }}
-        .val-table td.vr {{ text-align: right; font-weight: 700; font-family: 'Courier New', monospace; }}
-        .val-row {{ display: flex; gap: 4mm; }}
-        .val-half {{ flex: 1; min-width: 0; }}
-        @media print {{
-            .validation-cover {{ page-break-after: always; break-after: page; }}
-        }}
-        @media screen {{
-            .validation-cover {{ display: none; }}
-        }}
         {massendruck_css}
         </style>
         <script>
@@ -3210,7 +3004,6 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
         <div class="main-content">
         <div id="md-cover" class="md-cover"></div>
         <div class="page-stack">
-        {render_validation_cover(customers, plan_rows, df_sap_raw if df_sap_raw is not None else pd.DataFrame(), file_names or {{}}, massendruck_data) if df_sap_raw is not None else ""}
         {docs_buffer.getvalue()}
         </div>
         </div>
@@ -3461,10 +3254,6 @@ def build_fachberater_pdf_zip(customers: pd.DataFrame) -> bytes:
     zip_buffer.seek(0)
     return zip_buffer.getvalue()
 
-def init_session_state() -> None:
-    pass  # Session-State wird bei Bedarf in main() gesetzt
-
-
 def all_required_uploads_present(upload_map: Dict[str, Optional[object]]) -> bool:
     return all(upload_map.values())
 
@@ -3504,7 +3293,6 @@ def show_customer_preview(customer: pd.Series, customer_rows: pd.DataFrame) -> N
 
 
 def main() -> None:
-    init_session_state()
     st.markdown(streamlit_css(), unsafe_allow_html=True)
 
     # ── App-Header ──
@@ -3737,14 +3525,6 @@ def main() -> None:
                     sidebar_logo_b64=sidebar_logo_b64, sidebar_logo_mime=sidebar_logo_mime,
                     debug_data=debug_reports,
                     massendruck_data=massendruck_data,
-                    df_sap_raw=df_sap_debug,
-                    file_names={
-                        "Kunden": kunden_file.name,
-                        "SAP": sap_file.name,
-                        "Transport": transport_file.name,
-                        "Kostenstellen": kostenstellen_file.name,
-                        "Tournummern": tournummern_file.name if tournummern_file else "",
-                    },
                 )
             progress.progress(100, text="Fertig!")
             st.session_state["_export_html"] = bulk_html
