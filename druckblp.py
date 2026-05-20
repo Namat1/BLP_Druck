@@ -1247,6 +1247,7 @@ def export_css() -> str:
             .doc-subtitle.is-edited { background: none; border-bottom: none; }
             .is-match, .is-current { box-shadow: none !important; }
             .print-hidden { display: none !important; }
+            .no-sortiment { display: none !important; }
         }
 
         /* ══════════════════════════════════════
@@ -2262,8 +2263,9 @@ def build_full_document_html(customers: pd.DataFrame, plan_rows: pd.DataFrame, i
 
         cust_name_escaped = html.escape(str(customer.get("Name", "")).lower())
         fachberater_attr = normalize_text(customer.get("Fachberater", "")) or "Ohne Fachberater"
+        _no_sort_cls = " no-sortiment" if not sortimente_text.strip() else ""
         docs_buffer.write(
-            f'<section class="customer-entry" '
+            f'<section class="customer-entry{_no_sort_cls}" '
             f'data-idx="{entry_count}" '
             f'data-sap="{html.escape(sap.lower())}" '
             f'data-csb="{html.escape(csb_nr.lower())}" '
