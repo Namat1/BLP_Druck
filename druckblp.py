@@ -3344,7 +3344,7 @@ def main() -> None:
 
         skip_empty = st.checkbox(
             f"Leere Seiten ausblenden ({_n_empty} Kunden ohne Transportgruppe)",
-            value=_n_empty > 0,
+            value=False,
             help=(
                 f"{_n_empty} Kunden haben keine Transportgruppe / Planzeilen. "
                 "Aktiviert: diese Seiten werden im Export übersprungen."
