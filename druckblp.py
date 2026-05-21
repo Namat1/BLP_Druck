@@ -715,7 +715,6 @@ def prepare_dataframes(
     kunden_basis["_search_blob"] = (
         kunden_basis["SAP_Nr"].fillna("") + " " +
         kunden_basis["Name"].fillna("") + " " +
-        kunden_basis["CSB_Nr"].fillna("") + " " +
         kunden_basis["Ort"].fillna("")
     ).str.lower()
 
@@ -816,7 +815,6 @@ def filter_customers(df_customers: pd.DataFrame, search_text: str) -> pd.DataFra
             mask &= (
                 df_customers["SAP_Nr"].str.lower().str.contains(search, na=False)
                 | df_customers["Name"].str.lower().str.contains(search, na=False)
-                | df_customers["CSB_Nr"].str.lower().str.contains(search, na=False)
                 | df_customers.get("Ort", pd.Series("", index=df_customers.index)).str.lower().str.contains(search, na=False)
             )
 
@@ -1788,7 +1786,7 @@ def render_export_search_toolbar(massendruck_section: str = "", logo_b64: str = 
         <div class="sidebar-section">
             <div class="sidebar-label">Suche</div>
             <input id="search-input" type="text"
-                placeholder="SAP, CSB, Name, Ort \u2026"
+                placeholder="SAP, Name, Ort \u2026"
                 autocomplete="off" spellcheck="false" />
             <div class="search-nav-row">
                 <button type="button" class="search-btn" id="btn-prev" title="Vorheriger (Shift+Enter)">&#8679;</button>
@@ -2297,7 +2295,7 @@ def build_full_document_html(
 
         search_blob = " ".join(
             part for part in [
-                sap, csb_nr,
+                sap,
                 customer.get("Name", ""),
                 customer.get("Ort", ""),
                 customer.get("PLZ", ""),
@@ -3414,7 +3412,7 @@ def main() -> None:
         st.markdown("Wähle einen Kunden zur schnellen Voransicht – ohne vollen HTML-Export.")
 
         search_input = st.text_input(
-            "Suche (Name, SAP, CSB, Ort)",
+            "Suche (Name, SAP, Ort)",
             key="preview_search",
             placeholder="z.B. Edeka Muster oder 1234567",
         )
