@@ -1112,7 +1112,7 @@ def export_css() -> str:
             grid-template-columns: 52mm 1fr 44mm;
             gap: 3mm;
             align-items: flex-start;
-            margin-bottom: 2mm;
+            margin-bottom: 1mm;
             padding-bottom: 0;
             border-bottom: none;
         }
@@ -1130,14 +1130,14 @@ def export_css() -> str:
         }
         .doc-title-block { text-align: center; padding: 0 2mm; }
         .doc-title {
-            font-size: 16pt;
+            font-size: 14pt;
             font-weight: 700;
-            line-height: 1.15;
-            margin-bottom: 1.5mm;
+            line-height: 1.1;
+            margin-bottom: 0.8mm;
             color: #111;
         }
         .doc-subtitle {
-            font-size: 22pt;
+            font-size: 17pt;
             font-weight: 700;
             color: #c00;
             margin-bottom: 1mm;
@@ -1165,7 +1165,7 @@ def export_css() -> str:
         ══════════════════════════════════════ */
         .doc-infobar {
             font-size: 9pt;
-            margin: 2mm 0 2mm;
+            margin: 1.2mm 0 1.2mm;
             padding: 0;
             background: none;
             border: none;
@@ -1212,6 +1212,29 @@ def export_css() -> str:
             width: 26mm;
             white-space: nowrap;
         }
+
+        /* ══════════════════════════════════════
+           DICHTE-STUFEN – schmalere Zeilen für große Kunden
+           (statt Skalierung). Schrift bleibt scharf, nur enger.
+           Stufe wird serverseitig je Kunde an .paper gesetzt.
+        ══════════════════════════════════════ */
+        .paper.is-dense  .plan-table { font-size: 8.5pt; }
+        .paper.is-dense  .plan-table thead th { padding: 1.4mm 3mm; font-size: 8.5pt; }
+        .paper.is-dense  .plan-table tbody td  { padding: 0.9mm 3mm; }
+        .paper.is-dense  .plan-table tr.day-start td { border-top-width: 0.9mm; }
+
+        .paper.is-xdense .plan-table { font-size: 8pt; }
+        .paper.is-xdense .plan-table thead th { padding: 1.0mm 2.5mm; font-size: 8pt; }
+        .paper.is-xdense .plan-table tbody td  { padding: 0.6mm 2.5mm; }
+        .paper.is-xdense .plan-table tr.day-start td { border-top-width: 0.8mm; }
+        .paper.is-xdense .doc-infobar { margin: 0.8mm 0; }
+
+        .paper.is-xxdense .plan-table { font-size: 7.5pt; }
+        .paper.is-xxdense .plan-table thead th { padding: 0.8mm 2.5mm; font-size: 7.5pt; }
+        .paper.is-xxdense .plan-table tbody td  { padding: 0.4mm 2.5mm; line-height: 1.15; }
+        .paper.is-xxdense .plan-table tr.day-start td { border-top-width: 0.7mm; }
+        .paper.is-xxdense .doc-infobar { margin: 0.6mm 0; }
+        .paper.is-xxdense .doc-header { margin-bottom: 0.6mm; }
 
         /* ══════════════════════════════════════
            COVER / SEPARATOR
@@ -1558,7 +1581,7 @@ def render_tour_overview(customer_rows: pd.DataFrame) -> str:
     )
 
     return f"""
-    <div style="font-size:9pt; margin-bottom:2.5mm; line-height:1.6;">
+    <div style="font-size:9pt; margin-bottom:1.5mm; line-height:1.45;">
         <div><strong style="display:inline-block;width:{label_w}">Liefertag:</strong>{day_spans}</div>
     </div>
     """
@@ -1708,8 +1731,28 @@ def render_customer_plan(
     tour_overview_html = render_tour_overview(customer_rows)
     plan_table_html    = render_plan_table(customer_rows)
 
+    # ── Dichte-Stufe bestimmen (statt Skalierung) ──
+    # Je mehr Planzeilen, desto enger die Zeilen, damit der Kunde ohne
+    # Verkleinerung der Schrift auf ein Blatt passt. Liefertage >= 6 ziehen
+    # mindestens "dense", weil das die typischen Voll-Sortiment-Kunden sind.
+    n_rows = int(len(customer_rows))
+    try:
+        n_days = customer_rows["Liefertag"].dropna()
+        n_days = int(n_days[~n_days.isin(["", "Unbekannt"])].nunique())
+    except Exception:
+        n_days = 0
+
+    if n_rows >= 28:
+        density_cls = " is-xxdense"
+    elif n_rows >= 22:
+        density_cls = " is-xdense"
+    elif n_rows >= 16 or n_days >= 6:
+        density_cls = " is-dense"
+    else:
+        density_cls = ""
+
     return f"""
-    <div class="paper">
+    <div class="paper{density_cls}">
     <div class="paper-inner">
 
         <!-- ===== HEADER: Adresse | Titel | Logo ===== -->
@@ -2721,58 +2764,10 @@ def build_full_document_html(
             updateSearchCount();
             updateCounts();
 
-            // ── Lazy fitToPage: nur sichtbare Papers skalieren (IntersectionObserver) ──
-            var supportsZoom = 'zoom' in document.documentElement.style &&
-                !/firefox/i.test(navigator.userAgent);
-
-            function fitSinglePaper(inner) {
-                // Reset
-                inner.style.zoom = "";
-                inner.style.transform = "";
-                inner.style.transformOrigin = "";
-                inner.style.width = "210mm";
-                // Measure
-                var paperH = inner.parentElement.clientHeight;
-                var paperW = inner.parentElement.clientWidth;
-                var contentH = inner.scrollHeight;
-                var contentW = inner.scrollWidth;
-                var scale = Math.min(paperH / contentH, paperW / contentW, 1);
-                if (scale < 1) {
-                    if (supportsZoom) {
-                        inner.style.zoom = scale;
-                    } else {
-                        inner.style.transform = "scale(" + scale + ")";
-                        inner.style.transformOrigin = "top left";
-                    }
-                    inner.style.width = "210mm";
-                }
-            }
-
-            // Lazy: nur Papers skalieren wenn sie in den Viewport kommen
-            var fitObserver = new IntersectionObserver(function (entries) {
-                entries.forEach(function (entry) {
-                    if (entry.isIntersecting) {
-                        var inner = entry.target.querySelector(".paper-inner");
-                        if (inner) fitSinglePaper(inner);
-                        fitObserver.unobserve(entry.target);
-                    }
-                });
-            }, { rootMargin: "200px 0px" });
-
-            document.querySelectorAll(".paper").forEach(function (p) {
-                fitObserver.observe(p);
-            });
-
-            var _resizeTimer = null;
-            window.addEventListener("resize", function () {
-                clearTimeout(_resizeTimer);
-                _resizeTimer = setTimeout(function () {
-                    // Bei Resize alle sichtbaren Papers neu skalieren
-                    document.querySelectorAll(".paper").forEach(function (p) {
-                        fitObserver.observe(p);
-                    });
-                }, 200);
-            });
+            // ── Kein Einpass-Skalieren mehr ──
+            // Große Kunden passen jetzt über die Dichte-Klassen (is-dense /
+            // is-xdense / is-xxdense, serverseitig in render_customer_plan
+            // gesetzt) in echter Schriftgröße auf ein Blatt – ohne Zoom/Scale.
 
             // ── Aktuell sichtbaren Kunden tracken (IntersectionObserver) ──
             var currentVisible = null;
