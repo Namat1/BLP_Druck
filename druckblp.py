@@ -1195,7 +1195,7 @@ def export_css() -> str:
         }
         .plan-table tbody td {
             border: 0.3mm solid #bbb;
-            padding: 1.5mm 3mm;
+            padding: calc(1.5mm + var(--rextra, 0px)) 3mm;
             vertical-align: top;
         }
         .plan-table tr.day-start td { border-top: 1.2mm solid #222; }
@@ -1220,18 +1220,18 @@ def export_css() -> str:
         ══════════════════════════════════════ */
         .paper.is-dense  .plan-table { font-size: 8.5pt; }
         .paper.is-dense  .plan-table thead th { padding: 1.4mm 3mm; font-size: 8.5pt; }
-        .paper.is-dense  .plan-table tbody td  { padding: 0.9mm 3mm; }
+        .paper.is-dense  .plan-table tbody td  { padding: calc(0.9mm + var(--rextra, 0px)) 3mm; }
         .paper.is-dense  .plan-table tr.day-start td { border-top-width: 0.9mm; }
 
         .paper.is-xdense .plan-table { font-size: 8pt; }
         .paper.is-xdense .plan-table thead th { padding: 1.0mm 2.5mm; font-size: 8pt; }
-        .paper.is-xdense .plan-table tbody td  { padding: 0.6mm 2.5mm; }
+        .paper.is-xdense .plan-table tbody td  { padding: calc(0.6mm + var(--rextra, 0px)) 2.5mm; }
         .paper.is-xdense .plan-table tr.day-start td { border-top-width: 0.8mm; }
         .paper.is-xdense .doc-infobar { margin: 0.8mm 0; }
 
         .paper.is-xxdense .plan-table { font-size: 7.5pt; }
         .paper.is-xxdense .plan-table thead th { padding: 0.8mm 2.5mm; font-size: 7.5pt; }
-        .paper.is-xxdense .plan-table tbody td  { padding: 0.4mm 2.5mm; line-height: 1.15; }
+        .paper.is-xxdense .plan-table tbody td  { padding: calc(0.4mm + var(--rextra, 0px)) 2.5mm; line-height: 1.15; }
         .paper.is-xxdense .plan-table tr.day-start td { border-top-width: 0.7mm; }
         .paper.is-xxdense .doc-infobar { margin: 0.6mm 0; }
         .paper.is-xxdense .doc-header { margin-bottom: 0.6mm; }
@@ -2744,31 +2744,44 @@ def build_full_document_html(
             updateSearchCount();
             updateCounts();
 
-            // ── Dichte messen statt skalieren ──
-            // Pro Blatt die größtmögliche Zeilenhöhe wählen, die noch auf eine
-            // A4-Seite passt: normal lassen, nur bei echtem Überlauf eine Stufe
-            // enger schalten (is-dense → is-xdense → is-xxdense). Kein Zoom/Scale,
-            // Schrift bleibt scharf – und vorhandener Platz wird voll genutzt.
+            // ── Dichte messen + Restplatz füllen (statt skalieren) ──
+            // 1) Größtmögliche Zeilenhöhe wählen, die noch auf eine A4-Seite
+            //    passt (normal → is-dense → is-xdense → is-xxdense).
+            // 2) Bleibt darunter noch Platz, diesen gleichmäßig auf die Zeilen
+            //    verteilen (gedeckelt), sodass die Tabelle bis zum Seitenende
+            //    reicht. Kein Zoom/Scale – Schrift bleibt scharf.
             var DENSITY_TIERS = ["is-dense", "is-xdense", "is-xxdense"];
-            function fitDensity(paper) {
+            var FILL_CAP_PX = 9;  // max. Extra-Höhe pro Zeile beim Auffüllen
+            function fitPaper(paper) {
                 var inner = paper.querySelector(".paper-inner");
                 if (!inner) return;
+                // Reset
+                paper.style.setProperty("--rextra", "0px");
                 paper.classList.remove("is-dense", "is-xdense", "is-xxdense");
-                // +1px Toleranz gegen Subpixel-Rundung
-                if (inner.scrollHeight <= paper.clientHeight + 1) return;  // passt normal
-                for (var i = 0; i < DENSITY_TIERS.length; i++) {
-                    paper.classList.remove("is-dense", "is-xdense", "is-xxdense");
-                    paper.classList.add(DENSITY_TIERS[i]);
-                    if (inner.scrollHeight <= paper.clientHeight + 1) return;  // passt auf dieser Stufe
+                // 1) Dichte: erst normal, dann bei Überlauf stufenweise enger
+                if (inner.scrollHeight > paper.clientHeight + 1) {
+                    for (var i = 0; i < DENSITY_TIERS.length; i++) {
+                        paper.classList.remove("is-dense", "is-xdense", "is-xxdense");
+                        paper.classList.add(DENSITY_TIERS[i]);
+                        if (inner.scrollHeight <= paper.clientHeight + 1) break;
+                    }
                 }
-                // Selbst is-xxdense reicht nicht → engste Stufe behalten (Notnagel)
+                // 2) Restplatz auf die Zeilen verteilen
+                var rows = inner.querySelectorAll(".plan-table tbody tr");
+                if (!rows.length) return;
+                var slack = paper.clientHeight - inner.scrollHeight;
+                if (slack <= 2) return;
+                var per = Math.floor(slack / rows.length);  // Extra-Höhe je Zeile
+                if (per > FILL_CAP_PX) per = FILL_CAP_PX;
+                if (per <= 0) return;
+                paper.style.setProperty("--rextra", (per / 2) + "px");  // halb oben / halb unten
             }
 
             // Lazy: nur messen, wenn das Blatt in den Viewport kommt
             var densObserver = new IntersectionObserver(function (entries) {
                 entries.forEach(function (entry) {
                     if (entry.isIntersecting) {
-                        fitDensity(entry.target);
+                        fitPaper(entry.target);
                         densObserver.unobserve(entry.target);
                     }
                 });
@@ -2781,7 +2794,7 @@ def build_full_document_html(
             window.addEventListener("beforeprint", function () {
                 document.querySelectorAll(".customer-entry").forEach(function (e) {
                     if (e.style.display === "none") return;
-                    e.querySelectorAll(".paper").forEach(fitDensity);
+                    e.querySelectorAll(".paper").forEach(fitPaper);
                 });
             });
 
