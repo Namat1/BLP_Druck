@@ -1098,7 +1098,7 @@ def export_css() -> str:
         .paper::before { display: none; }
         .paper-inner {
             width: 210mm;
-            padding: 14mm 15mm 12mm 15mm;
+            padding: 10mm 13mm;
             box-sizing: border-box;
             transform-origin: top left;
             zoom: 1;
@@ -1731,28 +1731,8 @@ def render_customer_plan(
     tour_overview_html = render_tour_overview(customer_rows)
     plan_table_html    = render_plan_table(customer_rows)
 
-    # ── Dichte-Stufe bestimmen (statt Skalierung) ──
-    # Je mehr Planzeilen, desto enger die Zeilen, damit der Kunde ohne
-    # Verkleinerung der Schrift auf ein Blatt passt. Liefertage >= 6 ziehen
-    # mindestens "dense", weil das die typischen Voll-Sortiment-Kunden sind.
-    n_rows = int(len(customer_rows))
-    try:
-        n_days = customer_rows["Liefertag"].dropna()
-        n_days = int(n_days[~n_days.isin(["", "Unbekannt"])].nunique())
-    except Exception:
-        n_days = 0
-
-    if n_rows >= 28:
-        density_cls = " is-xxdense"
-    elif n_rows >= 22:
-        density_cls = " is-xdense"
-    elif n_rows >= 16 or n_days >= 6:
-        density_cls = " is-dense"
-    else:
-        density_cls = ""
-
     return f"""
-    <div class="paper{density_cls}">
+    <div class="paper">
     <div class="paper-inner">
 
         <!-- ===== HEADER: Adresse | Titel | Logo ===== -->
@@ -2764,10 +2744,46 @@ def build_full_document_html(
             updateSearchCount();
             updateCounts();
 
-            // ── Kein Einpass-Skalieren mehr ──
-            // Große Kunden passen jetzt über die Dichte-Klassen (is-dense /
-            // is-xdense / is-xxdense, serverseitig in render_customer_plan
-            // gesetzt) in echter Schriftgröße auf ein Blatt – ohne Zoom/Scale.
+            // ── Dichte messen statt skalieren ──
+            // Pro Blatt die größtmögliche Zeilenhöhe wählen, die noch auf eine
+            // A4-Seite passt: normal lassen, nur bei echtem Überlauf eine Stufe
+            // enger schalten (is-dense → is-xdense → is-xxdense). Kein Zoom/Scale,
+            // Schrift bleibt scharf – und vorhandener Platz wird voll genutzt.
+            var DENSITY_TIERS = ["is-dense", "is-xdense", "is-xxdense"];
+            function fitDensity(paper) {
+                var inner = paper.querySelector(".paper-inner");
+                if (!inner) return;
+                paper.classList.remove("is-dense", "is-xdense", "is-xxdense");
+                // +1px Toleranz gegen Subpixel-Rundung
+                if (inner.scrollHeight <= paper.clientHeight + 1) return;  // passt normal
+                for (var i = 0; i < DENSITY_TIERS.length; i++) {
+                    paper.classList.remove("is-dense", "is-xdense", "is-xxdense");
+                    paper.classList.add(DENSITY_TIERS[i]);
+                    if (inner.scrollHeight <= paper.clientHeight + 1) return;  // passt auf dieser Stufe
+                }
+                // Selbst is-xxdense reicht nicht → engste Stufe behalten (Notnagel)
+            }
+
+            // Lazy: nur messen, wenn das Blatt in den Viewport kommt
+            var densObserver = new IntersectionObserver(function (entries) {
+                entries.forEach(function (entry) {
+                    if (entry.isIntersecting) {
+                        fitDensity(entry.target);
+                        densObserver.unobserve(entry.target);
+                    }
+                });
+            }, { rootMargin: "200px 0px" });
+            document.querySelectorAll(".paper").forEach(function (p) {
+                densObserver.observe(p);
+            });
+
+            // Vor dem Druck sicherstellen, dass alle sichtbaren Blätter gemessen sind
+            window.addEventListener("beforeprint", function () {
+                document.querySelectorAll(".customer-entry").forEach(function (e) {
+                    if (e.style.display === "none") return;
+                    e.querySelectorAll(".paper").forEach(fitDensity);
+                });
+            });
 
             // ── Aktuell sichtbaren Kunden tracken (IntersectionObserver) ──
             var currentVisible = null;
