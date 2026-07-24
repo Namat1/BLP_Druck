@@ -1,3 +1,4 @@
+# VERSION: SAP-Einlesung A-G, bestehende Kunden-/Transport-/Kostenstellen-Uploads bleiben erhalten (24.07.2026)
 import base64
 import hashlib
 import html
@@ -51,7 +52,7 @@ SORTIMENT_ZUSATZ_KEYWORDS = ("avo", "werbemittel", "hamburger jungs", "lagerware
 
 
 def _sortiment_key(name: str) -> tuple:
-    """Sortiment-Priorität: FW/FC/FL bzw. Klartext zuerst, Zusatz-Kram zuletzt."""
+    """Sortiment-Priorität: Klartext oder neue SAP-Codes FW/FC/FL."""
     raw = str(name).strip()
     code_prio = {"FW": 0, "FC": 1, "FL": 2}
     if raw.upper() in code_prio:
@@ -279,93 +280,61 @@ def load_structured_upload(file_bytes: bytes, filename: str, csv_separator: str,
     return structured_df
 
 
-# ============================================================
-# NEUE EINLESETABELLE A–G (EIN DATEI-UPLOAD)
-# ============================================================
-EINLESE_HEADER_ALIASES = {
-    "SAP_Nr": {
-        "kundennummermarkt", "kundennummer", "marktnummer", "sap", "sapnr", "sapnummer"
-    },
-    "Name": {
-        "marktnamekundenname", "marktname", "kundenname", "name"
-    },
-    "Sortiment": {
-        "sortiment", "sortimentscode"
-    },
-    "Liefertyp_ID": {
-        "transportgruppe", "transportgruppenummer", "transportgruppeid", "liefertyp", "liefertypid"
-    },
-    "Bestelltag": {
-        "bestellgrenzetag", "bestelltag", "bestellgrenze"
-    },
-    "Bestellzeitende": {
-        "bestellzeitbis", "bestellzeitende", "bestellzeit", "bestellschluss"
-    },
-    "Liefertag_Raw": {
-        "liefertag", "liefertagnummer", "lt"
-    },
+# Neue SAP-Einlesetabelle A-G. Die übrigen drei Uploads bleiben unverändert.
+SAP_NEU_HEADER_ALIASES = {
+    "SAP_Nr": {"kundennummermarkt", "kundennummer", "marktnummer", "sap", "sapnr", "sapnummer"},
+    "SAP_Name": {"marktnamekundenname", "marktname", "kundenname", "name"},
+    "Sortiment_Raw": {"sortiment", "sortimentscode"},
+    "Transportgruppe_Raw": {"transportgruppe", "transportgruppenummer", "transportgruppeid"},
+    "Bestelltag": {"bestellgrenzetag", "bestelltag", "bestellgrenze"},
+    "Bestellzeitende": {"bestellzeitbis", "bestellzeitende", "bestellzeit", "bestellschluss"},
+    "Liefertag_Raw": {"liefertag", "liefertagnummer", "lt"},
 }
 
 
-def _einlese_header_key(value) -> str:
-    """Normalisiert Überschriften für eine robuste Erkennung der A–G-Tabelle."""
+def _sap_header_key(value) -> str:
+    """Normalisiert Überschriften der neuen SAP-Tabelle."""
     text = normalize_text(value).lower()
     text = unicodedata.normalize("NFKD", text)
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
     return re.sub(r"[^a-z0-9]+", "", text)
 
 
-def _find_einlese_header(raw_df: pd.DataFrame) -> Tuple[int, Dict[str, int]]:
-    """Findet die Kopfzeile und ordnet die sieben Pflichtspalten zu."""
-    max_rows = min(30, len(raw_df))
-    for row_idx in range(max_rows):
-        key_to_col: Dict[str, int] = {}
+def _find_new_sap_columns(raw_df: pd.DataFrame) -> Optional[Tuple[int, Dict[str, int]]]:
+    """Erkennt die neue SAP-Tabelle anhand aller sieben A-G-Überschriften."""
+    for row_idx in range(min(30, len(raw_df))):
+        header_map: Dict[str, int] = {}
         for col_idx, value in enumerate(raw_df.iloc[row_idx].tolist()):
-            key = _einlese_header_key(value)
-            if key and key not in key_to_col:
-                key_to_col[key] = col_idx
+            key = _sap_header_key(value)
+            if key and key not in header_map:
+                header_map[key] = col_idx
 
         found: Dict[str, int] = {}
-        for target, aliases in EINLESE_HEADER_ALIASES.items():
+        for target, aliases in SAP_NEU_HEADER_ALIASES.items():
             for alias in aliases:
-                if alias in key_to_col:
-                    found[target] = key_to_col[alias]
+                if alias in header_map:
+                    found[target] = header_map[alias]
                     break
 
-        if len(found) == len(EINLESE_HEADER_ALIASES):
+        if len(found) == len(SAP_NEU_HEADER_ALIASES):
             return row_idx, found
-
-    # Fallback: festes Layout A–G, wenn keine eindeutige Überschrift gefunden wurde.
-    if raw_df.shape[1] >= 7:
-        return 0, {
-            "SAP_Nr": 0,
-            "Name": 1,
-            "Sortiment": 2,
-            "Liefertyp_ID": 3,
-            "Bestelltag": 4,
-            "Bestellzeitende": 5,
-            "Liefertag_Raw": 6,
-        }
-
-    raise ValueError(
-        "Die Einlesetabelle benötigt sieben Spalten: "
-        "Kundennummer / Markt, Marktname / Kundenname, Sortiment, Transportgruppe, "
-        "Bestellgrenze Tag, Bestellzeit bis und Liefertag."
-    )
+    return None
 
 
-def _normalize_input_time(value) -> str:
-    """Normalisiert Excel-/Textzeiten auf HH:MM, ohne 00:00 zu verwerfen."""
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return ""
-    if hasattr(value, "hour") and hasattr(value, "minute"):
-        return f"{int(value.hour):02d}:{int(value.minute):02d}"
+def _clean_sap_identifier(value) -> str:
+    """Bereinigt Excel-Zahlen wie 12823.0 zu 12823."""
+    text = normalize_text(value)
+    if re.fullmatch(r"\d+\.0", text):
+        return text[:-2]
+    return text
 
+
+def _normalize_sap_time(value) -> str:
+    """Wandelt SAP-/Excel-Zeiten robust in HH:MM um."""
     text = normalize_text(value)
     if not text:
         return ""
 
-    # pandas kann Excel-Zeiten auch als vollständigen Zeit-/Datumstext liefern.
     match = re.search(r"(?<!\d)(\d{1,2}):(\d{2})(?::\d{2})?(?!\d)", text)
     if match:
         hour, minute = int(match.group(1)), int(match.group(2))
@@ -373,25 +342,27 @@ def _normalize_input_time(value) -> str:
             return f"{hour:02d}:{minute:02d}"
 
     try:
-        number = int(float(text))
+        number = float(text.replace(",", "."))
     except (TypeError, ValueError):
         return text
 
-    digits = f"{number:04d}"
+    # Excel-Zeit als Tagesbruchteil, z.B. 0,375 = 09:00.
+    if 0 <= number < 1:
+        total_minutes = int(round(number * 24 * 60)) % (24 * 60)
+        return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+
+    integer = int(number)
+    digits = f"{integer:04d}"
     hour, minute = int(digits[:-2]), int(digits[-2:])
     if 0 <= hour <= 23 and 0 <= minute <= 59:
         return f"{hour:02d}:{minute:02d}"
     return text
 
 
-def prepare_einlesetabelle(
-    file_bytes: bytes,
-    filename: str,
-    csv_separator: str,
-) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int], pd.DataFrame, List[str]]:
-    """Liest die neue Einlesetabelle A–G und erzeugt alle Daten für den Sendeplan.
+def load_sap_upload(file_bytes: bytes, filename: str, csv_separator: str) -> pd.DataFrame:
+    """Liest automatisch das alte SAP-Layout oder die neue A-G-Einlesetabelle.
 
-    Erwartete Spalten:
+    Neues Layout:
       A Kundennummer / Markt
       B Marktname / Kundenname
       C Sortiment
@@ -399,90 +370,66 @@ def prepare_einlesetabelle(
       E Bestellgrenze Tag
       F Bestellzeit bis
       G Liefertag
-    """
-    warnings: List[str] = []
-    raw_df = read_upload_to_raw_dataframe(file_bytes, filename, csv_separator)
-    header_row, columns = _find_einlese_header(raw_df)
 
-    data = pd.DataFrame({
+    Für die bestehende Verarbeitung wird D sowohl als Liefertyp-/Transportgruppen-ID
+    als auch als KSP-Schlüssel übernommen. Dadurch bleiben Transportgruppen- und
+    Kostenstellen-Datei weiterhin eingebunden.
+    """
+    raw_df = read_upload_to_raw_dataframe(file_bytes, filename, csv_separator)
+    detected = _find_new_sap_columns(raw_df)
+
+    if detected is None:
+        old_df = extract_columns_by_letter(raw_df, UPLOAD_CONFIG["sap"]["mapping"], "SAP-Datei hochladen")
+        old_df = cleanup_dataframe(old_df, "SAP_Nr")
+        validate_required_columns(old_df, UPLOAD_CONFIG["sap"]["required"], "SAP-Datei hochladen")
+        old_df["Sortiment_Raw"] = ""
+        old_df["_sap_format_neu"] = False
+        return old_df
+
+    header_row, columns = detected
+    new_df = pd.DataFrame({
         target: raw_df.iloc[header_row + 1:, col_idx]
         for target, col_idx in columns.items()
     })
 
-    for column in data.columns:
-        data[column] = data[column].map(normalize_text)
-    data = data.replace("", pd.NA).dropna(how="all").fillna("")
+    for column in new_df.columns:
+        new_df[column] = new_df[column].map(normalize_text)
+    new_df = new_df.replace("", pd.NA).dropna(how="all").fillna("")
 
-    # Schlüssel und Zahlen aus Excel robust normalisieren (z.B. 210131.0 -> 210131).
-    data["SAP_Nr"] = data["SAP_Nr"].map(_massendruck_clean_cell)
-    data["Liefertyp_ID"] = data["Liefertyp_ID"].map(_massendruck_clean_cell)
-    data["Bestelltag"] = data["Bestelltag"].map(normalize_digits).str[:1]
-    data["Liefertag_Raw"] = data["Liefertag_Raw"].map(normalize_digits).str[:1]
-    data["Bestellzeitende"] = data["Bestellzeitende"].map(_normalize_input_time)
+    new_df["SAP_Nr"] = new_df["SAP_Nr"].map(_clean_sap_identifier)
+    new_df["Transportgruppe_Raw"] = new_df["Transportgruppe_Raw"].map(_clean_sap_identifier)
+    new_df["Bestelltag"] = new_df["Bestelltag"].map(normalize_digits).str[:1]
+    new_df["Liefertag_Raw"] = new_df["Liefertag_Raw"].map(normalize_digits).str[:1]
+    new_df["Bestellzeitende"] = new_df["Bestellzeitende"].map(_normalize_sap_time)
 
-    before_empty = len(data)
-    data = data[(data["SAP_Nr"] != "") & (data["Name"] != "")].copy()
-    removed_empty = before_empty - len(data)
-    if removed_empty:
-        warnings.append(f"{removed_empty} Zeile(n) ohne Kundennummer oder Kundenname wurden entfernt.")
+    new_df = new_df[
+        (new_df["SAP_Nr"] != "")
+        & (new_df["Bestelltag"].isin(["1", "2", "3", "4", "5", "6"]))
+        & (new_df["Liefertag_Raw"].isin(["1", "2", "3", "4", "5", "6"]))
+    ].copy()
 
-    # Die gelieferte Tabelle enthält viele technisch identische Mehrfachzeilen.
-    dedupe_cols = [
-        "SAP_Nr", "Name", "Sortiment", "Liefertyp_ID",
-        "Bestelltag", "Bestellzeitende", "Liefertag_Raw",
+    new_df["Warengruppe"] = "FLEISCH"
+    new_df["Liefertyp_ID"] = new_df["Transportgruppe_Raw"]
+    new_df["KSP_Schluessel"] = new_df["Transportgruppe_Raw"]
+    new_df["Rahmentour_Raw"] = ""
+    new_df["_sap_format_neu"] = True
+
+    # Viele SAP-Exporte enthalten technisch identische Mehrfachzeilen.
+    new_df = new_df.drop_duplicates(
+        subset=[
+            "SAP_Nr", "Sortiment_Raw", "Liefertyp_ID", "Bestelltag",
+            "Bestellzeitende", "Liefertag_Raw",
+        ],
+        keep="first",
+    ).reset_index(drop=True)
+
+    return new_df[
+        [
+            "SAP_Nr", "SAP_Name", "Warengruppe", "Liefertag_Raw", "Bestelltag",
+            "Bestellzeitende", "Liefertyp_ID", "KSP_Schluessel", "Rahmentour_Raw",
+            "Sortiment_Raw", "_sap_format_neu",
+        ]
     ]
-    before_dedup = len(data)
-    data = data.drop_duplicates(subset=dedupe_cols, keep="first").copy()
-    duplicate_count = before_dedup - len(data)
-    if duplicate_count:
-        warnings.append(f"{duplicate_count} identische Doppelzeile(n) wurden automatisch entfernt.")
-
-    invalid_delivery = ~data["Liefertag_Raw"].isin(["1", "2", "3", "4", "5", "6"])
-    if invalid_delivery.any():
-        warnings.append(
-            f"{int(invalid_delivery.sum())} Zeile(n) mit ungültigem Liefertag wurden entfernt."
-        )
-        data = data[~invalid_delivery].copy()
-
-    invalid_order = ~data["Bestelltag"].isin(["1", "2", "3", "4", "5", "6"])
-    if invalid_order.any():
-        warnings.append(
-            f"{int(invalid_order.sum())} Zeile(n) mit ungültigem Bestelltag wurden entfernt."
-        )
-        data = data[~invalid_order].copy()
-
-    # Zielschema der bisherigen App herstellen.
-    data["Bestelltag_Name"] = data["Bestelltag"].map(day_name_from_number)
-    data["Liefertag"] = data["Liefertag_Raw"].map(day_name_from_number)
-    data["Liefertyp_Name"] = data["Sortiment"]
-    data["Rahmentour_Raw"] = ""
-    data["KSP_Schluessel"] = ""
-    data["SortKey_Bestelltag"] = pd.to_numeric(data["Bestelltag"], errors="coerce").fillna(99)
-    data["SortKey_Sortiment"] = data["Sortiment"].map(_sortiment_key)
-
-    # Kundenstamm aus der Einlesetabelle ableiten. Nicht vorhandene Stammdaten bleiben leer.
-    kunden_basis = (
-        data[["SAP_Nr", "Name"]]
-        .drop_duplicates(subset=["SAP_Nr"], keep="first")
-        .copy()
-    )
-    kunden_basis["CSB_Nr"] = ""
-    kunden_basis["Strasse"] = ""
-    kunden_basis["PLZ"] = ""
-    kunden_basis["Ort"] = ""
-    kunden_basis["Fachberater"] = ""
-    kunden_basis["Rahmentour_Raw"] = ""
-
-    kunden_basis = kunden_basis[
-        ["SAP_Nr", "CSB_Nr", "Name", "Strasse", "PLZ", "Ort", "Fachberater", "Rahmentour_Raw"]
-    ]
-    kunden_basis["_search_blob"] = (
-        kunden_basis["SAP_Nr"].fillna("") + " " + kunden_basis["Name"].fillna("")
-    ).str.lower()
-
-    plan_rows = data.copy().reset_index(drop=True)
-    counts = {"Alle": int(len(kunden_basis))}
-    return kunden_basis.reset_index(drop=True), plan_rows, counts, data.copy(), warnings
 
 
 # ============================================================
@@ -862,10 +809,12 @@ def prepare_dataframes(
 ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int], pd.DataFrame, List[str]]:
     warnings: List[str] = []
     df_kunden = load_structured_upload(kunden_bytes, kunden_name, csv_separator, "kunden")
-    df_sap = load_structured_upload(sap_bytes, sap_name, csv_separator, "sap")
+    df_sap = load_sap_upload(sap_bytes, sap_name, csv_separator)
     # Nur Zeilen mit Warengruppe FLEISCH (Spalte C) übernehmen
     df_sap = df_sap[df_sap["Warengruppe"].str.upper().str.strip() == "FLEISCH"].copy()
     df_sap = df_sap.drop(columns=["Warengruppe"])
+    if "_sap_format_neu" in df_sap.columns:
+        df_sap = df_sap.drop(columns=["_sap_format_neu"])
 
     # Jede FLEISCH-Zeile MUSS einen KSP-Schlüssel haben – Zeilen ohne werden entfernt + Warnung
     _ksp_missing = df_sap["KSP_Schluessel"].isna() | (df_sap["KSP_Schluessel"].astype(str).str.strip() == "")
@@ -885,10 +834,22 @@ def prepare_dataframes(
 
     df_sap = df_sap.merge(df_transport, on="Liefertyp_ID", how="left")
 
-    # Echte Duplikate aus SAP entfernen: gleiche SAP + Liefertag + Bestelltag + Sortiment.
-    df_sap = df_sap.drop_duplicates(
-        subset=["SAP_Nr", "Liefertag_Raw", "Bestelltag", "Liefertyp_ID"], keep="first"
-    ).copy()
+    # Die Transportgruppen-Datei bleibt die primäre Bezeichnung. Beim neuen
+    # SAP-Format dient Spalte C (Sortiment) als Fallback, falls keine Zuordnung
+    # in der Transportgruppen-Datei gefunden wurde.
+    df_sap["Liefertyp_Name"] = df_sap["Liefertyp_Name"].fillna("")
+    if "Sortiment_Raw" in df_sap.columns:
+        _sortiment_fallback = df_sap["Sortiment_Raw"].fillna("").astype(str).str.strip()
+        _missing_transport_name = df_sap["Liefertyp_Name"].astype(str).str.strip() == ""
+        df_sap.loc[_missing_transport_name, "Liefertyp_Name"] = _sortiment_fallback[_missing_transport_name]
+
+    # Echte Duplikate entfernen, verschiedene Bestellzeiten aber erhalten.
+    _dedupe_cols = [
+        "SAP_Nr", "Liefertag_Raw", "Bestelltag", "Bestellzeitende", "Liefertyp_ID"
+    ]
+    if "Sortiment_Raw" in df_sap.columns:
+        _dedupe_cols.append("Sortiment_Raw")
+    df_sap = df_sap.drop_duplicates(subset=_dedupe_cols, keep="first").copy()
 
     kunden_basis = df_kunden.merge(
         df_sap[["SAP_Nr", "Rahmentour_Raw"]].drop_duplicates(subset=["SAP_Nr"]),
@@ -3423,17 +3384,29 @@ def main() -> None:
 
     st.divider()
 
-    # ── Neue Einlesetabelle: ein Pflicht-Upload statt vier Quelldateien ──
-    col_data, col_logo = st.columns(2, gap="medium")
-    with col_data:
-        einlese_file = st.file_uploader(
-            "Einlesetabelle",
-            type=["xlsx", "xls", "xlsm", "csv"],
-            key="einlesetabelle_upload",
-            help=(
-                "Spalten A–G: Kundennummer / Markt, Marktname / Kundenname, Sortiment, "
-                "Transportgruppe, Bestellgrenze Tag, Bestellzeit bis, Liefertag."
-            ),
+    # ── Uploads ──
+    col_left, col_right = st.columns(2, gap="medium")
+    with col_left:
+        kunden_file = st.file_uploader("Kundenliste", type=["xlsx", "xls", "xlsm", "csv"],
+                                        help="Spalten: A, I, J, K, L, M, N")
+        sap_file = st.file_uploader("SAP-Datei", type=["xlsx", "xls", "xlsm", "csv"],
+                                     help="Neues Format A–G: Kundennummer, Marktname, Sortiment, Transportgruppe, Bestelltag, Bestellzeit, Liefertag. Altes SAP-Format bleibt kompatibel.")
+        st.caption("SAP-Einlesung: neues A–G-Format · Version 24.07.2026")
+    with col_right:
+        transport_file = st.file_uploader("Transportgruppen", type=["xlsx", "xls", "xlsm", "csv"],
+                                          help="Spalten: A, C")
+        kostenstellen_file = st.file_uploader("Kostenstellen-Datei", type=["xlsx", "xls", "xlsm", "csv"],
+                                              help="A=Liefertag, B=Tourname, dann Sortiment-Gruppen (Lagerware, AVO, …)")
+
+    # ── Zusätzlicher Upload: Tournummern für Massendruck-Sortierung ──
+    col_tour, col_logo = st.columns(2, gap="medium")
+    with col_tour:
+        tournummern_file = st.file_uploader(
+            "Tournummern-Datei (Massendruck)",
+            type=["xlsx", "xls", "xlsm"],
+            key="tournummern_upload",
+            help="Neue Tournummern-Datei: Blätter KUNDENDATEN, DIREKT, MK, HUPA_NMS, HUPA_MALCHOW. "
+                 "Spalten: B=SAP, G=Mo, H=Die, I=Mitt, J=Don, K=Fr, L=Sam.",
         )
     with col_logo:
         logo_file = st.file_uploader(
@@ -3443,64 +3416,62 @@ def main() -> None:
             help="Logo oben rechts auf jedem gedruckten Sendeplan (unabhängig vom App-Logo)",
         )
 
-    # ── Optional: Tournummern für Massendruck-Sortierung ──
-    tournummern_file = st.file_uploader(
-        "Tournummern-Datei (Massendruck, optional)",
-        type=["xlsx", "xls", "xlsm"],
-        key="tournummern_upload",
-        help="Blätter KUNDENDATEN, DIREKT, MK, HUPA_NMS, HUPA_MALCHOW; B=SAP, G–L=Mo–Sa.",
-    )
+    upload_map = {
+        "kunden": kunden_file, "sap": sap_file, "transport": transport_file,
+        "kostenstellen": kostenstellen_file,
+    }
 
     # ── CSV-Trennzeichen ──
     csv_separator = st.selectbox(
         "CSV-Trennzeichen",
         options=[";", ",", "\t"],
-        format_func=lambda x: {";": "Semikolon ;", ",": "Komma ,", "\t": "Tab ⇥"}[x],
+        format_func=lambda x: {";" : "Semikolon ;", ",": "Komma ,", "\t": "Tab ⇥"}[x],
         index=0,
-        help="Nur relevant für CSV-Dateien. Excel-Dateien ignorieren diese Einstellung.",
+        help="Nur relevant für CSV-Uploads. Excel-Dateien ignorieren diese Einstellung.",
     )
 
     # ── Status-Zeile ──
-    data_status = (
-        f'<span class="status-ok">✓ {html.escape(einlese_file.name)}</span>'
-        if einlese_file else '<span class="status-miss">✗ fehlt</span>'
-    )
-    tour_status = (
-        f'<span class="status-ok">✓ {html.escape(tournummern_file.name)}</span>'
-        if tournummern_file else '<span style="color:#888;font-size:0.85rem">– optional</span>'
-    )
-    st.markdown(
-        f"<p style='font-size:0.85rem;margin:0.5rem 0;'>"
-        f"Einlesetabelle: {data_status}&ensp;·&ensp;Tournummern: {tour_status}</p>",
-        unsafe_allow_html=True,
-    )
+    file_names = [f'<span class="status-ok">✓ {html.escape(v.name)}</span>' if v else '<span class="status-miss">✗ fehlt</span>'
+                  for k, v in upload_map.items()]
+    labels = ["Kunden", "SAP", "Transport", "Kostenstellen"]
+    status_parts = [f"{l}: {f}" for l, f in zip(labels, file_names)]
+    # Tournummern-Status (optional, aber informativ)
+    tour_status = (f'<span class="status-ok">✓ {html.escape(tournummern_file.name)}</span>'
+                   if tournummern_file else '<span style="color:#888;font-size:0.85rem">– optional</span>')
+    status_parts.append(f"Tournummern: {tour_status}")
+    st.markdown(f"<p style='font-size:0.85rem;margin:0.5rem 0;'>{'&ensp;·&ensp;'.join(status_parts)}</p>", unsafe_allow_html=True)
 
-    if einlese_file is None:
-        st.info("Einlesetabelle hochladen, dann werden die Sendepläne aufgebaut.")
+    if not all_required_uploads_present(upload_map):
+        st.info("Alle 4 Dateien hochladen, dann erscheint der Button.")
         return
 
-    # ── Daten verarbeiten ──
+    # ── Daten verarbeiten (csv_separator kommt aus Selectbox oben) ──
     try:
         _hasher = hashlib.md5()
-        _hasher.update(einlese_file.getvalue())
+        for _f in (kunden_file, sap_file, transport_file, kostenstellen_file):
+            _hasher.update(_f.getvalue())
         _hasher.update(csv_separator.encode())
         _cache_key = _hasher.hexdigest()
 
         if st.session_state.get("_df_cache_key") != _cache_key:
-            _result = prepare_einlesetabelle(
-                einlese_file.getvalue(), einlese_file.name, csv_separator,
+            _result = prepare_dataframes(
+                kunden_file.getvalue(), kunden_file.name,
+                sap_file.getvalue(), sap_file.name,
+                transport_file.getvalue(), transport_file.name,
+                kostenstellen_file.getvalue(), kostenstellen_file.name,
+                csv_separator,
             )
             st.session_state["_df_cache_key"] = _cache_key
             st.session_state["_df_cache_result"] = _result
-            st.session_state["_export_ready"] = False
+            st.session_state["_export_ready"] = False  # alte HTML verwerfen
 
         (customers_df, plan_rows_df, counts,
          df_sap_debug, _warnings) = st.session_state["_df_cache_result"]
     except Exception as exc:
-        st.error(f"Fehler beim Verarbeiten der Einlesetabelle: {exc}")
+        st.error(f"Fehler beim Verarbeiten: {exc}")
         return
 
-    # Hinweise aus der Einlesetabelle anzeigen (z.B. entfernte Doppelzeilen)
+    # Warnungen aus prepare_dataframes anzeigen (z.B. fehlende KSP-Schlüssel)
     for _w in st.session_state["_df_cache_result"][4]:
         st.warning(_w)
 
@@ -3627,10 +3598,10 @@ def main() -> None:
             st.caption("HTML im Browser öffnen → Suche, Filter, Druck alles drin.")
 
         st.divider()
-        st.subheader("Filter im fertigen HTML")
+        st.subheader("Fachberater-Auswahl im HTML")
         st.caption(
-            "Nach dem Generieren die HTML-Datei öffnen. Dort kannst du nach Kundennummer oder Marktname suchen "
-            "und die gewünschten Seiten direkt drucken."
+            "Nach dem Generieren die HTML-Datei öffnen. Links im Menü kannst du einen Fachberater auswählen. "
+            "Dann werden nur die Märkte dieses Fachberaters geladen und können direkt gedruckt werden."
         )
 
     # ── Tab: Kundenvorschau ──
