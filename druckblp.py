@@ -148,12 +148,22 @@ def normalize_digits(value) -> str:
 
 
 def _normalize_ksp_key(value) -> str:
-    """Normalisiert KSP-Schlüssel: 1.0 -> '1', '1.0' -> '1', 1 -> '1'."""
+    """Robuster Match-Key fuer Kostenstellen-/Transportgruppen-Schluessel.
+
+    Beispiele, die dadurch identisch behandelt werden:
+      ``FW 0800`` / ``FW0800`` / ``FW-0800``
+      ``MK CSB`` / ``MKCSB``
+      ``1`` / ``1.0``
+
+    Der Key wird nur intern fuer den Abgleich verwendet.
+    """
     text = normalize_text(value)
-    # Float-artige Strings: '1.0' -> '1'
-    if re.match(r'^\d+\.0$', text):
+    if re.fullmatch(r"\d+\.0", text):
         text = text[:-2]
-    return text
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.lower().replace("ß", "ss")
+    return re.sub(r"[^a-z0-9]+", "", text)
 
 
 def day_name_from_number(value) -> str:
@@ -478,11 +488,19 @@ def _parse_kst_time(val) -> str:
 
 
 def _parse_kst_tag(val) -> str:
-    """Wandelt 'Don' -> 'Donnerstag', 'Fr' -> 'Freitag' etc."""
+    """Normalisiert Bestelltage aus dem Kostenstellenplan auf volle Wochentage."""
     if val is None:
         return ""
-    key = str(val).strip().lower()
-    return TAG_ABKUERZUNGEN.get(key, str(val).strip())
+    raw = str(val).strip()
+    if not raw:
+        return ""
+    key = raw.lower()
+    full_days = {
+        "montag": "Montag", "dienstag": "Dienstag", "mittwoch": "Mittwoch",
+        "donnerstag": "Donnerstag", "donnertag": "Donnerstag",
+        "freitag": "Freitag", "samstag": "Samstag", "sonntag": "Sonntag",
+    }
+    return full_days.get(key, TAG_ABKUERZUNGEN.get(key, raw))
 
 
 def extract_zusatz_schedule(file_bytes: bytes, filename: str) -> pd.DataFrame:
@@ -784,7 +802,17 @@ def build_zusatz_plan_rows(plan_rows: pd.DataFrame, zusatz_schedule: pd.DataFram
     merged["Sortiment"] = merged["sortiment"]
     merged["Bestelltag_Name"] = merged["bestelltag"]
     merged["Bestellzeitende"] = merged["bestellzeitende"]
-    merged["SortKey_Sortiment"] = merged["sortiment"].map(lambda n: (1, 0))
+
+    # Zusatzzeilen (z.B. AVO) bekommen ihren EIGENEN Bestelltag-Sortierschluessel.
+    # Sonst wuerden sie den Sortierschluessel der Fleisch-Basiszeile erben.
+    _weekday_to_num = {name: num for num, name in WOCHENTAGE.items()}
+    merged["Bestelltag"] = merged["Bestelltag_Name"].map(
+        lambda d: str(_weekday_to_num.get(normalize_text(d), ""))
+    )
+    merged["SortKey_Bestelltag"] = merged["Bestelltag_Name"].map(
+        lambda d: _weekday_to_num.get(normalize_text(d), 99)
+    )
+    merged["SortKey_Sortiment"] = merged["sortiment"].map(_sortiment_key)
     merged["_ist_zusatz"] = True
     merged["Liefertyp_ID"] = ""
 
@@ -898,6 +926,18 @@ def prepare_dataframes(
     # Join über KSP_Schluessel (SAP Spalte P) + Liefertag
     zusatz_schedule = extract_zusatz_schedule(kostenstellen_bytes, kostenstellen_name)
     plan_rows = build_zusatz_plan_rows(plan_rows, zusatz_schedule)
+
+    # Diagnose speziell fuer AVO: Die echte KW40-Datei liefert AVO aus F/G/H.
+    # Falls AVO im Kostenstellenplan vorhanden ist, aber kein Kunde gematcht wurde,
+    # wird der Schluesselabgleich sofort sichtbar statt erst im PDF aufzufallen.
+    _avo_sched_count = int((zusatz_schedule.get("sortiment", pd.Series(dtype=str)).astype(str).str.upper() == "AVO").sum())
+    _avo_plan_count = int((plan_rows.get("Sortiment", pd.Series(dtype=str)).astype(str).str.upper() == "AVO").sum())
+    if _avo_sched_count > 0 and _avo_plan_count == 0:
+        warnings.append(
+            f"AVO ist im Kostenstellenplan vorhanden ({_avo_sched_count} Zuordnungen), "
+            "aber es wurde kein AVO-Eintrag einem Kunden zugeordnet. "
+            "Bitte Transportgruppe/KSP-Schluessel der SAP-Datei pruefen."
+        )
 
     counts = {"Alle": int(len(kunden_basis))}
 
