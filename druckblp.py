@@ -420,7 +420,28 @@ def load_sap_upload(file_bytes: bytes, filename: str, csv_separator: str) -> pd.
 
     new_df["Warengruppe"] = "FLEISCH"
     new_df["Liefertyp_ID"] = new_df["Transportgruppe_Raw"]
-    new_df["KSP_Schluessel"] = new_df["Transportgruppe_Raw"]
+
+    # WICHTIG: Im neuen SAP-A-G-Format ist Spalte D die Transportgruppe
+    # (z.B. 1001) und NICHT der KSP-Schlüssel des Kostenstellenplans.
+    # Der Kostenstellenplan verwendet für FW Schlüssel wie "FW 0800",
+    # "FW 0900", "FW 1400" oder "FW 2000". Diese ergeben sich aus
+    # SAP-Spalte C (Sortiment, z.B. FW) + SAP-Spalte F (Bestellzeit bis).
+    def _new_sap_ksp_key(row) -> str:
+        sortiment = normalize_text(row.get("Sortiment_Raw", "")).upper()
+        zeit = _normalize_sap_time(row.get("Bestellzeitende", ""))
+        sortiment_compact = re.sub(r"[^A-Z0-9]+", "", sortiment)
+
+        # Sonderfall aus dem Kostenstellenplan
+        if sortiment_compact == "MKCSB":
+            return "MK CSB"
+
+        if not sortiment_compact or not zeit:
+            return ""
+
+        # z.B. FW + 09:00 -> FW 0900
+        return f"{sortiment_compact} {zeit.replace(':', '')}"
+
+    new_df["KSP_Schluessel"] = new_df.apply(_new_sap_ksp_key, axis=1)
     new_df["Rahmentour_Raw"] = ""
     new_df["_sap_format_neu"] = True
 
@@ -933,10 +954,15 @@ def prepare_dataframes(
     _avo_sched_count = int((zusatz_schedule.get("sortiment", pd.Series(dtype=str)).astype(str).str.upper() == "AVO").sum())
     _avo_plan_count = int((plan_rows.get("Sortiment", pd.Series(dtype=str)).astype(str).str.upper() == "AVO").sum())
     if _avo_sched_count > 0 and _avo_plan_count == 0:
+        _sched_keys = sorted(set(zusatz_schedule.loc[
+            zusatz_schedule["sortiment"].astype(str).str.upper() == "AVO", "ksp_schluessel"
+        ].astype(str)))[:12]
+        _plan_keys = sorted(set(plan_rows.get("KSP_Schluessel", pd.Series(dtype=str)).astype(str)))[:12]
         warnings.append(
             f"AVO ist im Kostenstellenplan vorhanden ({_avo_sched_count} Zuordnungen), "
             "aber es wurde kein AVO-Eintrag einem Kunden zugeordnet. "
-            "Bitte Transportgruppe/KSP-Schluessel der SAP-Datei pruefen."
+            f"AVO-Schlüssel: {', '.join(_sched_keys)} | "
+            f"SAP/KSP-Schlüssel (Beispiele): {', '.join(_plan_keys)}"
         )
 
     counts = {"Alle": int(len(kunden_basis))}
@@ -976,7 +1002,13 @@ def build_debug_report(
             ["SAP_Nr", "Name", "KSP_Schluessel", "Liefertag", "Sortiment"]
         ).drop_duplicates(subset=["SAP_Nr"]).reset_index(drop=True)
     else:
-        reports["Ohne Zusatz-Sortimente"] = pd.DataFrame()
+        # Wenn die Zusatz-Markierung komplett fehlt, wurden gar keine Zusatzzeilen
+        # erzeugt. Dann alle vorhandenen Kunden als "ohne Zusatz" ausweisen,
+        # statt irreführend 0 Einträge zu melden.
+        reports["Ohne Zusatz-Sortimente"] = safe_cols(
+            plan_rows,
+            ["SAP_Nr", "Name", "KSP_Schluessel", "Liefertag", "Sortiment"]
+        ).drop_duplicates(subset=["SAP_Nr"]).reset_index(drop=True)
 
     return reports
 
